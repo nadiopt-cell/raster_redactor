@@ -25,7 +25,7 @@ export function CanvasStage({ toolbar, wrapRef, canvasRef, documentImage, loadin
     <section className="canvas-column">
       {toolbar}
       <div className={`canvas-wrap ${cursorClass}`} ref={wrapRef}>
-        {documentImage && <canvas ref={canvasRef} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp} onContextMenu={(event) => event.preventDefault()} data-testid="map-canvas" />}
+        {documentImage && <canvas ref={canvasRef} role="img" aria-label="Скан карты с правками. Клавиши: V/L/P — инструменты, пробел — перемещение вида, Ctrl+Z — отмена, Delete — удалить фрагмент." onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp} onContextMenu={(event) => event.preventDefault()} data-testid="map-canvas" />}
         {!documentImage && !loading && <div className="canvas-empty"><div className="empty-card"><div className="empty-icon"><FileImage size={23} /></div><h2>Начните с листа карты</h2><p>Откройте изображение или PDF. Пример скана загружается автоматически — если он недоступен, выберите файл вручную.</p><button className="btn btn-primary" onClick={onImportClick}><FilePlus2 size={15} />Выбрать документ</button></div></div>}
         {loading && <div className="loading-surface"><div className="loading-box">Подготавливаем скан на этом устройстве<div className="skeleton-line" /><div className="skeleton-line" style={{ width: '72%' }} /></div></div>}
         {error && <div className="error-banner" role="alert">{error} <button className="btn-icon" onClick={onCloseError} aria-label="Закрыть сообщение"><X size={13} /></button></div>}

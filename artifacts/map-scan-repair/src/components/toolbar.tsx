@@ -25,9 +25,9 @@ export function Toolbar({ tool, onToolSelect, canUndo, canRedo, onUndo, onRedo, 
   return (
     <div className="toolbar">
       <div className="toolbar-group">
-        <button className={`btn-icon ${tool === 'select' ? 'active' : ''}`} onClick={() => onToolSelect('select')} title="Выбрать фрагмент" aria-label="Выбрать фрагмент" data-testid="toolbar-select"><MousePointer2 size={15} /></button>
-        <button className={`btn-icon ${tool === 'lasso' ? 'active' : ''}`} onClick={() => onToolSelect('lasso')} title="Контур фрагмента" aria-label="Контур фрагмента" data-testid="toolbar-lasso"><ScanLine size={15} /></button>
-        <button className={`btn-icon ${tool === 'points' ? 'active' : ''}`} onClick={() => onToolSelect('points')} title="Опорные точки" aria-label="Опорные точки" data-testid="toolbar-points"><ArrowLeftRight size={15} /></button>
+        <button className={`btn-icon ${tool === 'select' ? 'active' : ''}`} onClick={() => onToolSelect('select')} aria-pressed={tool === 'select'} title="Выбрать фрагмент" aria-label="Выбрать фрагмент" data-testid="toolbar-select"><MousePointer2 size={15} /></button>
+        <button className={`btn-icon ${tool === 'lasso' ? 'active' : ''}`} onClick={() => onToolSelect('lasso')} aria-pressed={tool === 'lasso'} title="Контур фрагмента" aria-label="Контур фрагмента" data-testid="toolbar-lasso"><ScanLine size={15} /></button>
+        <button className={`btn-icon ${tool === 'points' ? 'active' : ''}`} onClick={() => onToolSelect('points')} aria-pressed={tool === 'points'} title="Опорные точки" aria-label="Опорные точки" data-testid="toolbar-points"><ArrowLeftRight size={15} /></button>
         <span className="tool-separator" />
         <button className="btn-icon" onClick={onUndo} disabled={!canUndo} title="Отменить (Ctrl+Z)" aria-label="Отменить" data-testid="canvas-undo"><Undo2 size={16} /></button>
         <button className="btn-icon" onClick={onRedo} disabled={!canRedo} title="Повторить (Ctrl+Shift+Z)" aria-label="Повторить" data-testid="canvas-redo"><Redo2 size={16} /></button>
@@ -44,7 +44,7 @@ export function Toolbar({ tool, onToolSelect, canUndo, canRedo, onUndo, onRedo, 
           <button className="btn-icon" onClick={onDelete} title="Удалить фрагмент" aria-label="Удалить фрагмент" data-testid="toolbar-delete-fragment"><X size={15} /></button>
           <span className="tool-separator" />
         </>}
-        <button className="btn-icon" onClick={() => onToolSelect('pan')} title="Переместить вид" aria-label="Переместить вид"><Hand size={15} /></button>
+        <button className={`btn-icon ${tool === 'pan' ? 'active' : ''}`} onClick={() => onToolSelect('pan')} aria-pressed={tool === 'pan'} title="Переместить вид" aria-label="Переместить вид" data-testid="toolbar-pan"><Hand size={15} /></button>
         <span className="tool-separator" />
         <span className="eyebrow" style={{ letterSpacing: '.08em' }}>{selectedNumber != null ? `ФРАГМЕНТ ${selectedNumber}` : 'ОБЗОР ЛИСТА'}</span>
       </div>

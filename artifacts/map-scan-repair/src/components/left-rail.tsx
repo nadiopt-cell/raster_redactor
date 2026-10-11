@@ -26,10 +26,10 @@ export function LeftRail({ tool, onToolSelect, documentImage, fragments, selecte
       <div className="panel-block">
         <div className="panel-caption">Инструменты</div>
         <div className="tool-list">
-          <button className={`tool-button ${tool === 'select' ? 'active' : ''}`} onClick={() => onToolSelect('select')} data-testid="tool-select"><span className="tool-icon"><MousePointer2 size={14} /></span>Выбрать и сдвинуть<span className="shortcut">V</span></button>
-          <button className={`tool-button ${tool === 'lasso' ? 'active' : ''}`} onClick={() => onToolSelect('lasso')} data-testid="tool-lasso"><span className="tool-icon"><ScanLine size={14} /></span>Контур фрагмента<span className="shortcut">L</span></button>
-          <button className={`tool-button ${tool === 'points' ? 'active' : ''}`} onClick={() => onToolSelect('points')} data-testid="tool-control-points"><span className="tool-icon"><ArrowLeftRight size={14} /></span>Опорные точки<span className="shortcut">P</span></button>
-          <button className={`tool-button ${tool === 'pan' ? 'active' : ''}`} onClick={() => onToolSelect('pan')} data-testid="tool-pan"><span className="tool-icon"><Hand size={14} /></span>Перемещение вида<span className="shortcut">Пробел</span></button>
+          <button className={`tool-button ${tool === 'select' ? 'active' : ''}`} onClick={() => onToolSelect('select')} aria-pressed={tool === 'select'} data-testid="tool-select"><span className="tool-icon"><MousePointer2 size={14} /></span>Выбрать и сдвинуть<span className="shortcut">V</span></button>
+          <button className={`tool-button ${tool === 'lasso' ? 'active' : ''}`} onClick={() => onToolSelect('lasso')} aria-pressed={tool === 'lasso'} data-testid="tool-lasso"><span className="tool-icon"><ScanLine size={14} /></span>Контур фрагмента<span className="shortcut">L</span></button>
+          <button className={`tool-button ${tool === 'points' ? 'active' : ''}`} onClick={() => onToolSelect('points')} aria-pressed={tool === 'points'} data-testid="tool-control-points"><span className="tool-icon"><ArrowLeftRight size={14} /></span>Опорные точки<span className="shortcut">P</span></button>
+          <button className={`tool-button ${tool === 'pan' ? 'active' : ''}`} onClick={() => onToolSelect('pan')} aria-pressed={tool === 'pan'} data-testid="tool-pan"><span className="tool-icon"><Hand size={14} /></span>Перемещение вида<span className="shortcut">Пробел</span></button>
         </div>
         {tool === 'lasso' && <p className="hint">Щёлкайте по вершинам. Замкните контур кликом по первой точке или нажмите Enter. Escape отменяет контур.</p>}
         {tool === 'points' && <p className="hint">Для каждой пары: щёлкните исходное место, затем его правильное положение. Три пары и более задают локальную деформацию.</p>}
