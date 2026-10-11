@@ -193,41 +193,58 @@ function App() {
   }, []);
 
   const loadPdf = useCallback(async (data: ArrayBuffer, name: string) => {
-    const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(data) }).promise;
-    const page = await pdf.getPage(1);
-    const base = page.getViewport({ scale: 1 });
-    const maxEdge = 6000;
-    const maxPixels = 36_000_000;
-    const scale = Math.min(
-      maxEdge / base.width,
-      maxEdge / base.height,
-      Math.sqrt(maxPixels / (base.width * base.height)),
-      8,
-    );
-    const viewport = page.getViewport({ scale: Math.max(1, scale) });
-    const pageCanvas = window.document.createElement('canvas');
-    pageCanvas.width = Math.ceil(viewport.width);
-    pageCanvas.height = Math.ceil(viewport.height);
-    const context = pageCanvas.getContext('2d', { alpha: false });
-    if (!context) throw new Error('Браузер не смог подготовить поверхность для PDF.');
-    await page.render({ canvasContext: context, viewport }).promise;
-    const blob = await new Promise<Blob>((resolve, reject) => {
-      pageCanvas.toBlob((result) => {
-        if (result) resolve(result);
-        else reject(new Error('Не удалось подготовить страницу PDF.'));
-      }, 'image/png');
-    });
-    const objectUrl = URL.createObjectURL(blob);
-    const image = new Image();
+    const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(data), isEvalSupported: false }).promise;
     try {
-      image.src = objectUrl;
-      await image.decode();
-      await loadImage(image, name);
+      const page = await pdf.getPage(1);
+      try {
+        const base = page.getViewport({ scale: 1 });
+        const maxEdge = 6000;
+        const maxPixels = 36_000_000;
+        const scale = Math.min(
+          maxEdge / base.width,
+          maxEdge / base.height,
+          Math.sqrt(maxPixels / (base.width * base.height)),
+          8,
+        );
+        // Нижняя граница 0.05: раньше Math.max(1, scale) отменял ограничения для крупных страниц,
+        // и canvas превышал лимиты браузера; теперь рендер всегда укладывается в лимит.
+        const renderScale = Math.max(0.05, scale);
+        const viewport = page.getViewport({ scale: renderScale });
+        const pageCanvas = window.document.createElement('canvas');
+        pageCanvas.width = Math.ceil(viewport.width);
+        pageCanvas.height = Math.ceil(viewport.height);
+        const context = pageCanvas.getContext('2d', { alpha: false });
+        if (!context) throw new Error('Браузер не смог подготовить поверхность для PDF.');
+        await page.render({ canvasContext: context, viewport }).promise;
+        page.cleanup();
+        const blob = await new Promise<Blob>((resolve, reject) => {
+          pageCanvas.toBlob((result) => {
+            if (result) resolve(result);
+            else reject(new Error('Не удалось подготовить страницу PDF.'));
+          }, 'image/png');
+        });
+        const objectUrl = URL.createObjectURL(blob);
+        const image = new Image();
+        try {
+          image.src = objectUrl;
+          await image.decode();
+          await loadImage(image, name);
+        } finally {
+          URL.revokeObjectURL(objectUrl);
+        }
+        const messages: string[] = [];
+        if (renderScale < 1) {
+          messages.push(`Страница PDF отрисована с уменьшением до ${Math.round(renderScale * 100)} %, чтобы уложиться в лимит холста браузера.`);
+        }
+        if (pdf.numPages > 1) {
+          messages.push(`Открыта первая страница из ${pdf.numPages}. Остальные страницы PDF пока не загружены.`);
+        }
+        if (messages.length) setNotice(messages.join(' '));
+      } finally {
+        page.cleanup();
+      }
     } finally {
-      URL.revokeObjectURL(objectUrl);
-    }
-    if (pdf.numPages > 1) {
-      setNotice(`Открыта первая страница из ${pdf.numPages}. Остальные страницы PDF пока не загружены.`);
+      await pdf.destroy();
     }
   }, [loadImage]);
 
