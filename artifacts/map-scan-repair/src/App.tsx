@@ -698,6 +698,11 @@ function App() {
   const processFile = async (file: File) => {
     const token = ++loadTokenRef.current;
     userFileLoadedRef.current = true;
+    // Браузеры не декодируют TIFF, хотя accept="image/*" его пропускает: объясняем это сразу, а не через «не удалось открыть».
+    if (file.type === 'image/tiff' || /\.tiff?$/i.test(file.name)) {
+      setError('Формат TIFF не поддерживается браузером — сохраните скан как PNG, JPEG или PDF.');
+      return;
+    }
     setLoading(true); setError(''); setNotice('');
     try {
       if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
