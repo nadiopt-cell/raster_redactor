@@ -20,6 +20,9 @@ type DocumentImage = { image: HTMLImageElement; name: string; width: number; hei
 type Tool = 'select' | 'lasso' | 'points' | 'pan';
 type HistoryEntry = { fragments: Fragment[]; selectedId: number | null };
 const HISTORY_LIMIT = 100;
+// Лимиты холста браузера: сторона не более 32767 px, консервативная площадь 100 Мп (Safari/iOS).
+const MAX_CANVAS_EDGE = 32_767;
+const MAX_CANVAS_PIXELS = 100_000_000;
 
 const cloneFragments = (items: Fragment[]) => items.map((item) => ({
   ...item, polygon: item.polygon.map((p) => ({ ...p })),
@@ -179,7 +182,12 @@ function App() {
   }, [documentImage]);
 
   const loadImage = useCallback((image: HTMLImageElement, name: string) => {
-    setDocumentImage({ image, name, width: image.naturalWidth, height: image.naturalHeight });
+    const width = image.naturalWidth;
+    const height = image.naturalHeight;
+    if (width > MAX_CANVAS_EDGE || height > MAX_CANVAS_EDGE || width * height > MAX_CANVAS_PIXELS) {
+      throw new Error(`Изображение слишком большое для браузера: ${Math.round(width * height / 1_000_000)} Мп, максимум ${Math.round(MAX_CANVAS_PIXELS / 1_000_000)} Мп. Уменьшите скан или сохраните его в PDF.`);
+    }
+    setDocumentImage({ image, name, width, height });
     setPan({ x: 0, y: 0 });
     setZoom(1);
     setFragments([]);
@@ -641,7 +649,11 @@ function App() {
       else {
         const url = URL.createObjectURL(file);
         const image = new Image();
-        image.onload = () => { void loadImage(image, file.name); URL.revokeObjectURL(url); setLoading(false); };
+        image.onload = () => {
+          try { loadImage(image, file.name); }
+          catch (caught) { setError(caught instanceof Error ? caught.message : 'Не удалось открыть изображение. Проверьте формат файла.'); }
+          URL.revokeObjectURL(url); setLoading(false);
+        };
         image.onerror = () => { URL.revokeObjectURL(url); setError('Не удалось открыть изображение. Проверьте формат файла.'); setLoading(false); };
         image.src = url;
       }
@@ -659,20 +671,35 @@ function App() {
   };
   const exportPng = () => {
     if (!documentImage) return;
-    const output = window.document.createElement('canvas');
-    output.width = documentImage.width; output.height = documentImage.height;
-    const ctx = output.getContext('2d');
-    if (!ctx) { setError('Не удалось создать экспортное изображение.'); return; }
-    ctx.imageSmoothingQuality = 'high';
-    drawScene(ctx, output.width, output.height, false);
-    output.toBlob((blob) => {
-      if (!blob) { setError('Не удалось сформировать PNG.'); return; }
-      const url = URL.createObjectURL(blob);
-      const link = window.document.createElement('a');
-      link.href = url; link.download = `${documentImage.name.replace(/\.[^.]+$/, '')}-исправлено.png`;
-      link.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-      setNotice('PNG сохранён в исходном разрешении документа.');
-    }, 'image/png');
+    let output: HTMLCanvasElement;
+    try {
+      output = window.document.createElement('canvas');
+      output.width = documentImage.width; output.height = documentImage.height;
+      const context = output.getContext('2d');
+      if (!context) throw new Error('Не удалось создать экспортное изображение.');
+      context.imageSmoothingQuality = 'high';
+      drawScene(context, output.width, output.height, false);
+    } catch (caught) {
+      if (caught instanceof DOMException && caught.name === 'SecurityError') setError('Экспорт запрещён политикой безопасности: холст скомпрометирован сторонними данными.');
+      else setError(caught instanceof Error ? caught.message : 'Экспорт не удался: браузер не смог подготовить изображение.');
+      return;
+    }
+    try {
+      output.toBlob((blob) => {
+        if (!blob) { setError('Не удалось сформировать PNG.'); return; }
+        const url = URL.createObjectURL(blob);
+        const link = window.document.createElement('a');
+        link.href = url; link.download = `${documentImage.name.replace(/\.[^.]+$/, '')}-исправлено.png`;
+        link.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+        const sizeMb = blob.size / (1024 * 1024);
+        setNotice(sizeMb > 50
+          ? `PNG сохранён (${Math.round(sizeMb)} МБ). Файл большой — скачивание и открытие могут занять время.`
+          : 'PNG сохранён в исходном разрешении документа.');
+      }, 'image/png');
+    } catch (caught) {
+      if (caught instanceof DOMException && caught.name === 'SecurityError') setError('Экспорт запрещён политикой безопасности: холст скомпрометирован сторонними данными.');
+      else setError('Экспорт не удался: браузер не смог сформировать PNG.');
+    }
   };
   const percentZoom = `${Math.round(zoom * 100)}%`;
   const pointCount = useMemo(() => fragments.reduce((sum, fragment) => sum + fragment.pairs.length, 0), [fragments]);
