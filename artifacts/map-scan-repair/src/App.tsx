@@ -142,6 +142,8 @@ function App() {
   const userFileLoadedRef = useRef(false);
   const spacePanRef = useRef(false);
   const prevToolRef = useRef<Tool>('select');
+  const fitZoomRef = useRef(1);
+  const needsFitRef = useRef(false);
   const idCounter = useRef(1);
   const [documentImage, setDocumentImage] = useState<DocumentImage | null>(null);
   const [fragments, setFragments] = useState<Fragment[]>([]);
@@ -180,9 +182,39 @@ function App() {
     const width = size?.width ?? wrapRef.current.clientWidth;
     const height = size?.height ?? wrapRef.current.clientHeight;
     if (!width || !height) return;
-    const nextZoom = Math.min((width - 70) / documentImage.width, (height - 65) / documentImage.height, 1.25);
+    // Math.max(1, …) защищает от отрицательного/нулевого зума в узком контейнере
+    const nextZoom = Math.max(0.01, Math.min(Math.max(1, width - 70) / documentImage.width, Math.max(1, height - 65) / documentImage.height, 1.25));
+    fitZoomRef.current = nextZoom;
     setZoom(nextZoom);
     setPan({ x: (width - documentImage.width * nextZoom) / 2, y: (height - documentImage.height * nextZoom) / 2 });
+  }, [documentImage]);
+
+  const zoomAt = (point: Point, factor: number) => {
+    const minZoom = Math.min(0.08, fitZoomRef.current);
+    const next = Math.max(minZoom, Math.min(4, zoom * factor));
+    if (next === zoom) return;
+    setZoom(next);
+    setPan({ x: point.x - ((point.x - pan.x) / zoom) * next, y: point.y - ((point.y - pan.y) / zoom) * next });
+  };
+  const zoomAtRef = useRef(zoomAt);
+  zoomAtRef.current = zoomAt;
+  const canvasCenter = () => {
+    const element = wrapRef.current;
+    return element ? { x: element.clientWidth / 2, y: element.clientHeight / 2 } : { x: 0, y: 0 };
+  };
+
+  useEffect(() => {
+    const element = wrapRef.current;
+    if (!element) return;
+    const onWheel = (event: WheelEvent) => {
+      if (!documentImage) return;
+      event.preventDefault();
+      const rect = element.getBoundingClientRect();
+      const factor = Math.exp(-event.deltaY * 0.0015);
+      zoomAtRef.current({ x: event.clientX - rect.left, y: event.clientY - rect.top }, factor);
+    };
+    element.addEventListener('wheel', onWheel, { passive: false });
+    return () => element.removeEventListener('wheel', onWheel);
   }, [documentImage]);
 
   const loadImage = useCallback((image: HTMLImageElement, name: string) => {
@@ -194,6 +226,7 @@ function App() {
     setDocumentImage({ image, name, width, height });
     setPan({ x: 0, y: 0 });
     setZoom(1);
+    needsFitRef.current = true;
     setFragments([]);
     setHistory([{ fragments: [], selectedId: null }]);
     setHistoryIndex(0);
@@ -317,8 +350,11 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (documentImage && canvasSize.width && canvasSize.height && pan.x === 0 && pan.y === 0) fitImage(canvasSize);
-  }, [documentImage, canvasSize, pan, fitImage]);
+    if (documentImage && canvasSize.width && canvasSize.height && needsFitRef.current) {
+      needsFitRef.current = false;
+      fitImage(canvasSize);
+    }
+  }, [documentImage, canvasSize, fitImage]);
 
   const drawScene = useCallback((ctx: CanvasRenderingContext2D, w: number, h: number, includeGuides: boolean) => {
     if (!documentImage) return;
@@ -617,8 +653,8 @@ function App() {
       if (!event.ctrlKey && !event.metaKey) {
         const zoomIn = event.key === '+' || event.key === '=' || event.code === 'NumpadAdd' || event.code === 'Equal';
         const zoomOut = event.key === '-' || event.code === 'NumpadSubtract' || event.code === 'Minus';
-        if (zoomIn) setZoom((value) => Math.min(4, value * 1.15));
-        else if (zoomOut) setZoom((value) => Math.max(.08, value / 1.15));
+        if (zoomIn) zoomAtRef.current(canvasCenter(), 1.15);
+        else if (zoomOut) zoomAtRef.current(canvasCenter(), 1 / 1.15);
       }
       if (event.code === 'Delete' || event.code === 'Backspace') {
         if (selectedId) { event.preventDefault(); deleteSelected(); }
@@ -820,9 +856,9 @@ function App() {
               <button className="btn-icon" onClick={undo} disabled={!canUndo} title="Отменить (Ctrl+Z)" aria-label="Отменить" data-testid="canvas-undo"><Undo2 size={16} /></button>
               <button className="btn-icon" onClick={redo} disabled={!canRedo} title="Повторить (Ctrl+Shift+Z)" aria-label="Повторить" data-testid="canvas-redo"><Redo2 size={16} /></button>
               <span className="tool-separator" />
-              <button className="btn-icon" onClick={() => setZoom((value) => Math.max(.08, value / 1.2))} title="Уменьшить" aria-label="Уменьшить" data-testid="zoom-out"><ZoomOut size={16} /></button>
+              <button className="btn-icon" onClick={() => zoomAt(canvasCenter(), 1 / 1.2)} title="Уменьшить" aria-label="Уменьшить" data-testid="zoom-out"><ZoomOut size={16} /></button>
               <span className="zoom-readout">{percentZoom}</span>
-              <button className="btn-icon" onClick={() => setZoom((value) => Math.min(4, value * 1.2))} title="Увеличить" aria-label="Увеличить" data-testid="zoom-in"><ZoomIn size={16} /></button>
+              <button className="btn-icon" onClick={() => zoomAt(canvasCenter(), 1.2)} title="Увеличить" aria-label="Увеличить" data-testid="zoom-in"><ZoomIn size={16} /></button>
               <button className="btn-icon" onClick={() => fitImage()} title="Вписать лист" aria-label="Вписать лист" data-testid="zoom-fit"><ScanLine size={16} /></button>
             </div>
             <div className="toolbar-group">
