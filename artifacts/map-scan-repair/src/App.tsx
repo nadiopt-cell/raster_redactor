@@ -399,30 +399,6 @@ function App() {
     setNotice('Изменение восстановлено.');
   }, [canRedo, history, historyIndex]);
 
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement;
-      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return;
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
-        event.preventDefault(); if (event.shiftKey) redo(); else undo(); return;
-      }
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'y') { event.preventDefault(); redo(); return; }
-      if (event.key === 'Escape') {
-        setDraftPolygon([]); setPendingSource(null); setNotice('Текущий контур или точка отменены.');
-      }
-      if (event.key === 'Enter' && tool === 'lasso') finishLasso();
-      if (!event.ctrlKey && !event.metaKey && event.key.toLowerCase() === 'v') setTool('select');
-      if (!event.ctrlKey && !event.metaKey && event.key.toLowerCase() === 'l') { setTool('lasso'); setDraftPolygon([]); }
-      if (!event.ctrlKey && !event.metaKey && event.key.toLowerCase() === 'p') { setTool('points'); setPendingSource(null); }
-      if (event.key === '+' || event.key === '=') setZoom((value) => Math.min(4, value * 1.15));
-      if (event.key === '-') setZoom((value) => Math.max(.08, value / 1.15));
-      if (event.code === 'Space') { event.preventDefault(); setTool('pan'); }
-    };
-    const onKeyUp = (event: KeyboardEvent) => { if (event.code === 'Space') setTool((current) => current === 'pan' ? 'select' : current); };
-    window.addEventListener('keydown', onKeyDown); window.addEventListener('keyup', onKeyUp);
-    return () => { window.removeEventListener('keydown', onKeyDown); window.removeEventListener('keyup', onKeyUp); };
-  }, [undo, redo, tool, finishLasso]);
-
   const screenToImage = (event: PointerEvent<HTMLCanvasElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
     return { x: (event.clientX - rect.left - pan.x) / zoom, y: (event.clientY - rect.top - pan.y) / zoom };
@@ -496,6 +472,42 @@ function App() {
     setSelectedId(null);
     setNotice('Фрагмент удалён. Это действие можно отменить.');
   };
+
+  useEffect(() => {
+    const isTextEntry = (value: EventTarget | null) => {
+      const element = value as HTMLElement | null;
+      if (!element) return false;
+      return element.tagName === 'INPUT' || element.tagName === 'TEXTAREA' || element.tagName === 'SELECT' || element.isContentEditable;
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (isTextEntry(event.target)) return;
+      if ((event.ctrlKey || event.metaKey) && event.code === 'KeyZ') {
+        event.preventDefault(); if (event.shiftKey) redo(); else undo(); return;
+      }
+      if ((event.ctrlKey || event.metaKey) && event.code === 'KeyY') { event.preventDefault(); redo(); return; }
+      if (event.key === 'Escape') {
+        setDraftPolygon([]); setPendingSource(null); setNotice('Текущий контур или точка отменены.');
+      }
+      if (event.key === 'Enter' && tool === 'lasso') finishLasso();
+      if (!event.ctrlKey && !event.metaKey && event.code === 'KeyV') setTool('select');
+      if (!event.ctrlKey && !event.metaKey && event.code === 'KeyL') { setTool('lasso'); setDraftPolygon([]); }
+      if (!event.ctrlKey && !event.metaKey && event.code === 'KeyP') { setTool('points'); setPendingSource(null); }
+      if (!event.ctrlKey && !event.metaKey) {
+        const zoomIn = event.key === '+' || event.key === '=' || event.code === 'NumpadAdd' || event.code === 'Equal';
+        const zoomOut = event.key === '-' || event.code === 'NumpadSubtract' || event.code === 'Minus';
+        if (zoomIn) setZoom((value) => Math.min(4, value * 1.15));
+        else if (zoomOut) setZoom((value) => Math.max(.08, value / 1.15));
+      }
+      if (event.code === 'Delete' || event.code === 'Backspace') {
+        if (selectedId) { event.preventDefault(); deleteSelected(); }
+        return;
+      }
+      if (event.code === 'Space') { event.preventDefault(); setTool('pan'); }
+    };
+    const onKeyUp = (event: KeyboardEvent) => { if (event.code === 'Space') setTool((current) => current === 'pan' ? 'select' : current); };
+    window.addEventListener('keydown', onKeyDown); window.addEventListener('keyup', onKeyUp);
+    return () => { window.removeEventListener('keydown', onKeyDown); window.removeEventListener('keyup', onKeyUp); };
+  }, [undo, redo, tool, finishLasso, selectedId, deleteSelected]);
   const toggleFragmentVisibility = (id: number) => {
     const fragment = fragments.find((item) => item.id === id);
     if (!fragment) return;
