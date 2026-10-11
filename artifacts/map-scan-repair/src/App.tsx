@@ -6,6 +6,10 @@ import {
   Hand, MousePointer2, RotateCcw,
   RotateCw, ScanLine, Undo2, Redo2, X, ZoomIn, ZoomOut,
 } from 'lucide-react';
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
@@ -14,6 +18,8 @@ type Pair = { source: Point; target: Point };
 type Fragment = { id: number; polygon: Point[]; dx: number; dy: number; rotation: number; pairs: Pair[]; visible: boolean };
 type DocumentImage = { image: HTMLImageElement; name: string; width: number; height: number };
 type Tool = 'select' | 'lasso' | 'points' | 'pan';
+type HistoryEntry = { fragments: Fragment[]; selectedId: number | null };
+const HISTORY_LIMIT = 100;
 
 const cloneFragments = (items: Fragment[]) => items.map((item) => ({
   ...item, polygon: item.polygon.map((p) => ({ ...p })),
@@ -132,8 +138,9 @@ function App() {
   const idCounter = useRef(1);
   const [documentImage, setDocumentImage] = useState<DocumentImage | null>(null);
   const [fragments, setFragments] = useState<Fragment[]>([]);
-  const [history, setHistory] = useState<Fragment[][]>([[]]);
+  const [history, setHistory] = useState<HistoryEntry[]>([{ fragments: [], selectedId: null }]);
   const [historyIndex, setHistoryIndex] = useState(0);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [tool, setTool] = useState<Tool>('select');
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [draftPolygon, setDraftPolygon] = useState<Point[]>([]);
@@ -150,12 +157,16 @@ function App() {
   const canRedo = historyIndex < history.length - 1;
   const canWarp = !!selectedFragment && selectedFragment.pairs.length >= 3;
 
-  const commit = useCallback((next: Fragment[]) => {
+  const commit = useCallback((next: Fragment[], nextSelectedId?: number | null) => {
     const clean = cloneFragments(next);
+    const selection = nextSelectedId === undefined ? selectedId : nextSelectedId;
     setFragments(clean);
-    setHistory((old) => [...old.slice(0, historyIndex + 1), cloneFragments(clean)]);
-    setHistoryIndex(historyIndex + 1);
-  }, [historyIndex]);
+    setHistory((old) => {
+      const trimmed = [...old.slice(0, historyIndex + 1), { fragments: cloneFragments(clean), selectedId: selection ?? null }];
+      return trimmed.length > HISTORY_LIMIT ? trimmed.slice(trimmed.length - HISTORY_LIMIT) : trimmed;
+    });
+    setHistoryIndex(Math.min(historyIndex + 1, HISTORY_LIMIT - 1));
+  }, [historyIndex, selectedId]);
 
   const fitImage = useCallback((size?: { width: number; height: number }) => {
     if (!documentImage || !wrapRef.current) return;
@@ -167,12 +178,12 @@ function App() {
     setPan({ x: (width - documentImage.width * nextZoom) / 2, y: (height - documentImage.height * nextZoom) / 2 });
   }, [documentImage]);
 
-  const loadImage = useCallback(async (image: HTMLImageElement, name: string) => {
+  const loadImage = useCallback((image: HTMLImageElement, name: string) => {
     setDocumentImage({ image, name, width: image.naturalWidth, height: image.naturalHeight });
     setPan({ x: 0, y: 0 });
     setZoom(1);
     setFragments([]);
-    setHistory([[]]);
+    setHistory([{ fragments: [], selectedId: null }]);
     setHistoryIndex(0);
     setSelectedId(null);
     setDraftPolygon([]);
@@ -250,6 +261,16 @@ function App() {
     const timer = window.setTimeout(() => setNotice(''), 4200);
     return () => window.clearTimeout(timer);
   }, [notice]);
+
+  useEffect(() => {
+    if (fragments.length === 0) return;
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [fragments.length]);
 
   useEffect(() => {
     const element = wrapRef.current;
@@ -414,7 +435,7 @@ function App() {
       return;
     }
     const fragment: Fragment = { id: idCounter.current++, polygon: draftPolygon.map((p) => ({ ...p })), dx: 0, dy: 0, rotation: 0, pairs: [], visible: false };
-    commit([...fragments, fragment]);
+    commit([...fragments, fragment], fragment.id);
     setSelectedId(fragment.id);
     setDraftPolygon([]);
     setTool('select');
@@ -424,17 +445,19 @@ function App() {
   const undo = useCallback(() => {
     if (!canUndo) return;
     const index = historyIndex - 1;
+    const snapshot = history[index];
     setHistoryIndex(index);
-    setFragments(cloneFragments(history[index]));
-    setSelectedId(history[index].at(-1)?.id ?? null);
+    setFragments(cloneFragments(snapshot.fragments));
+    setSelectedId(snapshot.fragments.some((fragment) => fragment.id === snapshot.selectedId) ? snapshot.selectedId : null);
     setNotice('Изменение отменено.');
   }, [canUndo, history, historyIndex]);
   const redo = useCallback(() => {
     if (!canRedo) return;
     const index = historyIndex + 1;
+    const snapshot = history[index];
     setHistoryIndex(index);
-    setFragments(cloneFragments(history[index]));
-    setSelectedId(history[index].at(-1)?.id ?? null);
+    setFragments(cloneFragments(snapshot.fragments));
+    setSelectedId(snapshot.fragments.some((fragment) => fragment.id === snapshot.selectedId) ? snapshot.selectedId : null);
     setNotice('Изменение восстановлено.');
   }, [canRedo, history, historyIndex]);
 
@@ -521,7 +544,10 @@ function App() {
     if (pending) applyDragMove(pending);
     const drag = dragRef.current;
     if (drag?.kind === 'fragment') {
-      commit(fragments);
+      const start = drag.fragments.find((fragment) => fragment.id === drag.id);
+      const current = fragments.find((fragment) => fragment.id === drag.id);
+      const moved = !start || !current || Math.hypot(current.dx - start.dx, current.dy - start.dy) > 0.5;
+      if (moved) commit(fragments);
     }
     dragRef.current = null;
   };
@@ -531,7 +557,7 @@ function App() {
   };
   const deleteSelected = () => {
     if (!selectedId) return;
-    commit(fragments.filter((fragment) => fragment.id !== selectedId));
+    commit(fragments.filter((fragment) => fragment.id !== selectedId), null);
     setSelectedId(null);
     setNotice('Фрагмент удалён. Это действие можно отменить.');
   };
@@ -575,7 +601,7 @@ function App() {
     const fragment = fragments.find((item) => item.id === id);
     if (!fragment) return;
     const visible = !fragment.visible;
-    commit(fragments.map((item) => item.id === id ? { ...item, visible } : item));
+    commit(fragments.map((item) => item.id === id ? { ...item, visible } : item), visible ? id : (selectedId === id ? null : selectedId));
     if (visible) {
       setSelectedId(id);
       setNotice('Участок показан на холсте и останется видимым.');
@@ -588,9 +614,7 @@ function App() {
     if (!selectedFragment) return;
     commit(fragments.map((fragment) => fragment.id === selectedId ? { ...fragment, pairs: fragment.pairs.filter((_, i) => i !== index) } : fragment));
   };
-  const onImportFile = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
+  const processFile = async (file: File) => {
     setLoading(true); setError(''); setNotice('');
     try {
       if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
@@ -608,7 +632,13 @@ function App() {
       setError(caught instanceof Error ? caught.message : 'Не удалось прочитать файл.');
       setLoading(false);
     }
+  };
+  const onImportFile = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
     event.target.value = '';
+    if (!file) return;
+    if (fragments.length > 0) { setPendingFile(file); return; }
+    void processFile(file);
   };
   const exportPng = () => {
     if (!documentImage) return;
@@ -704,7 +734,7 @@ function App() {
           </div>
           <div className="panel-block">
             <div className="eyebrow">Все операции выполняются локально</div>
-            <p className="hint">Скан не покидает это устройство. История доступна до закрытия вкладки.</p>
+            <p className="hint">Скан не покидает это устройство. История хранится в памяти вкладки — до сотни последних шагов.</p>
           </div>
         </aside>
 
@@ -802,6 +832,21 @@ function App() {
           </div>
         </aside>
       </section>
+
+      <AlertDialog open={pendingFile != null} onOpenChange={(open) => { if (!open) setPendingFile(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Заменить документ?</AlertDialogTitle>
+            <AlertDialogDescription>
+              На листе есть обработанные участки. Открытие нового файла удалит их вместе с историей правок.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Оставить текущий</AlertDialogCancel>
+            <AlertDialogAction onClick={() => { const file = pendingFile; setPendingFile(null); if (file) void processFile(file); }}>Заменить</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </main>
   );
 }
