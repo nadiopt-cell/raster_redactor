@@ -138,6 +138,8 @@ function App() {
   const wrapRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const dragRef = useRef<{ kind: 'pan' | 'fragment'; pointer: Point; pan: Point; fragments: Fragment[]; id?: number } | null>(null);
+  const loadTokenRef = useRef(0);
+  const userFileLoadedRef = useRef(false);
   const idCounter = useRef(1);
   const [documentImage, setDocumentImage] = useState<DocumentImage | null>(null);
   const [fragments, setFragments] = useState<Fragment[]>([]);
@@ -257,6 +259,7 @@ function App() {
   }, [loadImage]);
 
   const loadUrl = useCallback(async (url: string, name: string) => {
+    const token = ++loadTokenRef.current;
     setLoading(true); setError('');
     try {
       const response = await fetch(url);
@@ -266,18 +269,21 @@ function App() {
       try {
         image.src = objectUrl;
         await image.decode();
+        if (token !== loadTokenRef.current) return; // устаревшая загрузка: пользователь уже открыл свой файл
         await loadImage(image, name);
       } finally {
         URL.revokeObjectURL(objectUrl);
       }
     } catch (caught) {
+      if (token !== loadTokenRef.current) return;
       setError(caught instanceof Error ? caught.message : 'Не удалось открыть документ.');
     } finally {
-      setLoading(false);
+      if (token === loadTokenRef.current) setLoading(false);
     }
   }, [loadImage]);
 
   useEffect(() => {
+    if (userFileLoadedRef.current) return;
     void loadUrl(`${import.meta.env.BASE_URL}example-map.jpg`, 'example-map.jpg');
   }, [loadUrl]);
 
@@ -640,24 +646,33 @@ function App() {
     commit(fragments.map((fragment) => fragment.id === selectedId ? { ...fragment, pairs: fragment.pairs.filter((_, i) => i !== index) } : fragment));
   };
   const processFile = async (file: File) => {
+    const token = ++loadTokenRef.current;
+    userFileLoadedRef.current = true;
     setLoading(true); setError(''); setNotice('');
     try {
       if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
         await loadPdf(await file.arrayBuffer(), file.name);
-        setLoading(false);
+        if (token === loadTokenRef.current) setLoading(false);
       }
       else {
         const url = URL.createObjectURL(file);
         const image = new Image();
+        const finish = () => { URL.revokeObjectURL(url); if (token === loadTokenRef.current) setLoading(false); };
         image.onload = () => {
+          if (token !== loadTokenRef.current) { URL.revokeObjectURL(url); return; }
           try { loadImage(image, file.name); }
           catch (caught) { setError(caught instanceof Error ? caught.message : 'Не удалось открыть изображение. Проверьте формат файла.'); }
-          URL.revokeObjectURL(url); setLoading(false);
+          finish();
         };
-        image.onerror = () => { URL.revokeObjectURL(url); setError('Не удалось открыть изображение. Проверьте формат файла.'); setLoading(false); };
+        image.onerror = () => {
+          if (token !== loadTokenRef.current) { URL.revokeObjectURL(url); return; }
+          setError('Не удалось открыть изображение. Проверьте формат файла.');
+          finish();
+        };
         image.src = url;
       }
     } catch (caught) {
+      if (token !== loadTokenRef.current) return;
       setError(caught instanceof Error ? caught.message : 'Не удалось прочитать файл.');
       setLoading(false);
     }
