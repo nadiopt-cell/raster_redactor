@@ -20,6 +20,34 @@ const cloneFragments = (items: Fragment[]) => items.map((item) => ({
   pairs: item.pairs.map((pair) => ({ source: { ...pair.source }, target: { ...pair.target } })),
 }));
 const centroid = (poly: Point[]) => poly.reduce((v, p) => ({ x: v.x + p.x / poly.length, y: v.y + p.y / poly.length }), { x: 0, y: 0 });
+const polygonCentroids = new WeakMap<Point[], Point>();
+const cachedCentroid = (poly: Point[]) => {
+  const cached = polygonCentroids.get(poly);
+  if (cached) return cached;
+  const center = centroid(poly);
+  polygonCentroids.set(poly, center);
+  return center;
+};
+const expandPolygon = (points: Point[], by: number) => {
+  const center = centroid(points);
+  return points.map((point) => {
+    const dx = point.x - center.x; const dy = point.y - center.y;
+    const length = Math.hypot(dx, dy) || 1;
+    return { x: point.x + (dx / length) * by, y: point.y + (dy / length) * by };
+  });
+};
+const sourceBBox = (points: Point[], padding: number, imageWidth: number, imageHeight: number) => {
+  let minX = Infinity; let minY = Infinity; let maxX = -Infinity; let maxY = -Infinity;
+  points.forEach((point) => {
+    minX = Math.min(minX, point.x); minY = Math.min(minY, point.y);
+    maxX = Math.max(maxX, point.x); maxY = Math.max(maxY, point.y);
+  });
+  const sx = Math.max(0, Math.floor(minX - padding));
+  const sy = Math.max(0, Math.floor(minY - padding));
+  const sw = Math.min(imageWidth, Math.ceil(maxX + padding)) - sx;
+  const sh = Math.min(imageHeight, Math.ceil(maxY + padding)) - sy;
+  return { sx, sy, sw: Math.max(0, sw), sh: Math.max(0, sh) };
+};
 const distance = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
 const pointInside = (point: Point, poly: Point[]) => {
   let inside = false;
@@ -40,12 +68,12 @@ const pointOnOrNearPolygon = (point: Point, poly: Point[], tolerance: number) =>
   });
 };
 const transformedPoint = (point: Point, fragment: Fragment) => {
-  const center = centroid(fragment.polygon); const angle = fragment.rotation * Math.PI / 180;
+  const center = cachedCentroid(fragment.polygon); const angle = fragment.rotation * Math.PI / 180;
   const x = point.x - center.x; const y = point.y - center.y;
   return { x: center.x + fragment.dx + x * Math.cos(angle) - y * Math.sin(angle), y: center.y + fragment.dy + x * Math.sin(angle) + y * Math.cos(angle) };
 };
 const inverseFragmentPoint = (point: Point, fragment: Fragment) => {
-  const center = centroid(fragment.polygon); const angle = -fragment.rotation * Math.PI / 180;
+  const center = cachedCentroid(fragment.polygon); const angle = -fragment.rotation * Math.PI / 180;
   const x = point.x - center.x - fragment.dx; const y = point.y - center.y - fragment.dy;
   return { x: center.x + x * Math.cos(angle) - y * Math.sin(angle), y: center.y + x * Math.sin(angle) + y * Math.cos(angle) };
 };
@@ -276,26 +304,30 @@ function App() {
           target: transformedPoint(pair.target, fragment),
         }));
         const triangles = triangulate(mesh.map((point) => point.source));
+        const boundary = expandPolygon(fragment.polygon.map((point) => transformedPoint(point, fragment)), 0.5);
         triangles.forEach((triangle) => {
           const src = triangle.map((index) => mesh[index].source);
           const dst = triangle.map((index) => mesh[index].target);
           const center = { x: (src[0].x + src[1].x + src[2].x) / 3, y: (src[0].y + src[1].y + src[2].y) / 3 };
           if (!pointInside(center, fragment.polygon)) return;
           ctx.save();
-          const boundary = fragment.polygon.map((point) => transformedPoint(point, fragment));
           ctx.beginPath();
           ctx.moveTo(boundary[0].x, boundary[0].y);
           boundary.slice(1).forEach((point) => ctx.lineTo(point.x, point.y));
           ctx.closePath();
           ctx.clip();
-          ctx.beginPath(); ctx.moveTo(dst[0].x, dst[0].y); ctx.lineTo(dst[1].x, dst[1].y); ctx.lineTo(dst[2].x, dst[2].y); ctx.closePath(); ctx.clip();
-          if (applyAffineTriangle(ctx, src, dst)) ctx.drawImage(image, 0, 0);
+          const expandedDst = expandPolygon(dst, 0.5);
+          ctx.beginPath(); ctx.moveTo(expandedDst[0].x, expandedDst[0].y); ctx.lineTo(expandedDst[1].x, expandedDst[1].y); ctx.lineTo(expandedDst[2].x, expandedDst[2].y); ctx.closePath(); ctx.clip();
+          if (applyAffineTriangle(ctx, src, dst)) {
+            const box = sourceBBox(src, 2, w, h);
+            if (box.sw > 0 && box.sh > 0) ctx.drawImage(image, box.sx, box.sy, box.sw, box.sh, box.sx, box.sy, box.sw, box.sh);
+          }
           ctx.restore();
         });
       }
       if (fragment.pairs.length < 3) {
         ctx.save();
-        const center = centroid(fragment.polygon);
+        const center = cachedCentroid(fragment.polygon);
         ctx.translate(center.x + fragment.dx, center.y + fragment.dy);
         ctx.rotate(fragment.rotation * Math.PI / 180);
         ctx.translate(-center.x, -center.y);
@@ -303,7 +335,8 @@ function App() {
         ctx.moveTo(fragment.polygon[0].x, fragment.polygon[0].y);
         fragment.polygon.slice(1).forEach((point) => ctx.lineTo(point.x, point.y));
         ctx.closePath(); ctx.clip();
-        ctx.drawImage(image, 0, 0);
+        const box = sourceBBox(fragment.polygon, 2, w, h);
+        if (box.sw > 0 && box.sh > 0) ctx.drawImage(image, box.sx, box.sy, box.sw, box.sh, box.sx, box.sy, box.sw, box.sh);
         ctx.restore();
       }
     });
@@ -348,6 +381,7 @@ function App() {
     }
   }, [documentImage, fragments, selectedId, zoom, draftPolygon, pendingSource]);
 
+  const canvasBufferRef = useRef('');
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -355,10 +389,15 @@ function App() {
     const width = canvasSize.width || canvas.clientWidth;
     const height = canvasSize.height || canvas.clientHeight;
     if (!width || !height) return;
-    canvas.width = Math.round(width * dpr);
-    canvas.height = Math.round(height * dpr);
+    const bufferKey = `${Math.round(width)}x${Math.round(height)}@${dpr}`;
+    if (canvasBufferRef.current !== bufferKey) {
+      canvas.width = Math.round(width * dpr);
+      canvas.height = Math.round(height * dpr);
+      canvasBufferRef.current = bufferKey;
+    }
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+    ctx.imageSmoothingQuality = 'high';
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, width, height);
     if (!documentImage) return;
@@ -447,15 +486,39 @@ function App() {
       event.currentTarget.setPointerCapture(event.pointerId);
     } else setSelectedId(null);
   };
-  const onCanvasPointerMove = (event: PointerEvent<HTMLCanvasElement>) => {
+  const dragFrameRef = useRef<number | null>(null);
+  const pendingDragRef = useRef<{ x: number; y: number } | null>(null);
+  const applyDragMove = (point: { x: number; y: number }) => {
     const drag = dragRef.current;
     if (!drag) return;
-    const dx = (event.clientX - drag.pointer.x) / zoom;
-    const dy = (event.clientY - drag.pointer.y) / zoom;
-    if (drag.kind === 'pan') setPan({ x: drag.pan.x + event.clientX - drag.pointer.x, y: drag.pan.y + event.clientY - drag.pointer.y });
-    else setFragments(drag.fragments.map((fragment) => fragment.id === drag.id ? { ...fragment, dx: fragment.dx + dx, dy: fragment.dy + dy } : fragment));
+    if (drag.kind === 'pan') {
+      setPan({ x: drag.pan.x + point.x - drag.pointer.x, y: drag.pan.y + point.y - drag.pointer.y });
+      return;
+    }
+    const dx = (point.x - drag.pointer.x) / zoom;
+    const dy = (point.y - drag.pointer.y) / zoom;
+    setFragments(drag.fragments.map((fragment) => fragment.id === drag.id ? { ...fragment, dx: fragment.dx + dx, dy: fragment.dy + dy } : fragment));
+  };
+  const onCanvasPointerMove = (event: PointerEvent<HTMLCanvasElement>) => {
+    if (!dragRef.current) return;
+    pendingDragRef.current = { x: event.clientX, y: event.clientY };
+    if (dragFrameRef.current == null) {
+      dragFrameRef.current = window.requestAnimationFrame(() => {
+        dragFrameRef.current = null;
+        const point = pendingDragRef.current;
+        pendingDragRef.current = null;
+        if (point) applyDragMove(point);
+      });
+    }
   };
   const onCanvasPointerUp = () => {
+    if (dragFrameRef.current != null) {
+      window.cancelAnimationFrame(dragFrameRef.current);
+      dragFrameRef.current = null;
+    }
+    const pending = pendingDragRef.current;
+    pendingDragRef.current = null;
+    if (pending) applyDragMove(pending);
     const drag = dragRef.current;
     if (drag?.kind === 'fragment') {
       commit(fragments);
@@ -553,6 +616,7 @@ function App() {
     output.width = documentImage.width; output.height = documentImage.height;
     const ctx = output.getContext('2d');
     if (!ctx) { setError('Не удалось создать экспортное изображение.'); return; }
+    ctx.imageSmoothingQuality = 'high';
     drawScene(ctx, output.width, output.height, false);
     output.toBlob((blob) => {
       if (!blob) { setError('Не удалось сформировать PNG.'); return; }
