@@ -23,6 +23,8 @@ const HISTORY_LIMIT = 100;
 // Лимиты холста браузера: сторона не более 32767 px, консервативная площадь 100 Мп (Safari/iOS).
 const MAX_CANVAS_EDGE = 32_767;
 const MAX_CANVAS_PIXELS = 100_000_000;
+// Цвет заливки участка, освобождённого от исправленного фрагмента.
+const VACATED_FILL = '#d7cbb0';
 
 const cloneFragments = (items: Fragment[]) => items.map((item) => ({
   ...item, polygon: item.polygon.map((p) => ({ ...p })),
@@ -363,26 +365,14 @@ function App() {
       ? fragments.filter((fragment) => fragment.visible || fragment.id === selectedId)
       : fragments;
     const holes = displayedFragments.filter((fragment) => fragment.polygon.length >= 3);
-    ctx.save();
-    if (holes.length) {
-      ctx.beginPath();
-      ctx.rect(0, 0, documentImage.width, documentImage.height);
-      holes.forEach((fragment) => {
-        ctx.moveTo(fragment.polygon[0].x, fragment.polygon[0].y);
-        fragment.polygon.slice(1).forEach((p) => ctx.lineTo(p.x, p.y));
-        ctx.closePath();
-      });
-      try { ctx.clip('evenodd'); } catch { ctx.clip(); }
-    }
     ctx.drawImage(image, 0, 0);
-    ctx.restore();
     holes.forEach((fragment) => {
       ctx.save();
       ctx.beginPath();
       ctx.moveTo(fragment.polygon[0].x, fragment.polygon[0].y);
       fragment.polygon.slice(1).forEach((point) => ctx.lineTo(point.x, point.y));
       ctx.closePath();
-      ctx.fillStyle = '#d7cbb0';
+      ctx.fillStyle = VACATED_FILL;
       ctx.fill();
       ctx.restore();
     });
