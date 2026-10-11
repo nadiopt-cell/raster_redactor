@@ -570,8 +570,9 @@ function App() {
     const hitTest = (fragment: Fragment) =>
       pointOnOrNearPolygon(inverseFragmentPoint(imagePoint, fragment), fragment.polygon, 12 / zoom);
     const reverseFragments = [...fragments].reverse();
-    const hit = reverseFragments.find((fragment) => (fragment.visible || fragment.id === selectedId) && hitTest(fragment))
-      ?? reverseFragments.find(hitTest);
+    // Скрытые (не выбранные) фрагменты исключены из хит-теста: раньше их можно было перетаскивать «вслепую».
+    // Выбрать скрытый участок можно в списке слева — при выборе он отображается на холсте.
+    const hit = reverseFragments.find((fragment) => (fragment.visible || fragment.id === selectedId) && hitTest(fragment));
     if (hit) {
       setSelectedId(hit.id);
       dragRef.current = { kind: 'fragment', pointer, pan: { ...pan }, fragments: cloneFragments(fragments), id: hit.id };
