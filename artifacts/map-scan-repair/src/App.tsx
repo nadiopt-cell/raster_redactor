@@ -140,6 +140,8 @@ function App() {
   const dragRef = useRef<{ kind: 'pan' | 'fragment'; pointer: Point; pan: Point; fragments: Fragment[]; id?: number } | null>(null);
   const loadTokenRef = useRef(0);
   const userFileLoadedRef = useRef(false);
+  const spacePanRef = useRef(false);
+  const prevToolRef = useRef<Tool>('select');
   const idCounter = useRef(1);
   const [documentImage, setDocumentImage] = useState<DocumentImage | null>(null);
   const [fragments, setFragments] = useState<Fragment[]>([]);
@@ -622,9 +624,20 @@ function App() {
         if (selectedId) { event.preventDefault(); deleteSelected(); }
         return;
       }
-      if (event.code === 'Space') { event.preventDefault(); setTool('pan'); }
+      if (event.code === 'Space') {
+        if (event.repeat) return;
+        const element = event.target as HTMLElement | null;
+        // не мешаем стандартной активации кнопок и ссылок пробелом
+        if (element && (element.tagName === 'BUTTON' || element.tagName === 'A' || element.isContentEditable)) return;
+        event.preventDefault();
+        if (tool !== 'pan') { prevToolRef.current = tool; spacePanRef.current = true; setTool('pan'); }
+      }
     };
-    const onKeyUp = (event: KeyboardEvent) => { if (event.code === 'Space') setTool((current) => current === 'pan' ? 'select' : current); };
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.code !== 'Space' || !spacePanRef.current) return;
+      spacePanRef.current = false;
+      setTool((current) => (current === 'pan' ? prevToolRef.current : current));
+    };
     window.addEventListener('keydown', onKeyDown); window.addEventListener('keyup', onKeyUp);
     return () => { window.removeEventListener('keydown', onKeyDown); window.removeEventListener('keyup', onKeyUp); };
   }, [undo, redo, tool, finishLasso, selectedId, deleteSelected]);
