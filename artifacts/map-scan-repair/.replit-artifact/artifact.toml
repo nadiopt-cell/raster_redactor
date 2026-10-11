@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Редактор сканов карт"
+description = "A browser-based editor for repairing distorted scanned maps. Import a map image or PDF, outline fragments by clicking polygon vertices, shift and rotate regions, align them with control points, undo edits, and export the corrected map."
+version = "1.0.0"
+id = "artifacts/map-scan-repair"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 20228
+
+[services.development]
+run = "pnpm --filter @workspace/map-scan-repair run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/map-scan-repair", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/map-scan-repair/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "20228"
+BASE_PATH = "/"

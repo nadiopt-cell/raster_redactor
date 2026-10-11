@@ -1,0 +1,689 @@
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type PointerEvent } from 'react';
+import * as pdfjsLib from 'pdfjs-dist';
+import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import {
+  ArrowDownToLine, ArrowLeftRight, CircleHelp, FileImage, FilePlus2,
+  Hand, MousePointer2, Move, RotateCcw,
+  RotateCw, ScanLine, Undo2, Redo2, X, ZoomIn, ZoomOut,
+} from 'lucide-react';
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
+
+type Point = { x: number; y: number };
+type Pair = { source: Point; target: Point };
+type Fragment = { id: number; polygon: Point[]; dx: number; dy: number; rotation: number; pairs: Pair[] };
+type DocumentImage = { image: HTMLImageElement; name: string; width: number; height: number };
+type Tool = 'select' | 'lasso' | 'points' | 'pan';
+
+const cloneFragments = (items: Fragment[]) => items.map((item) => ({
+  ...item, polygon: item.polygon.map((p) => ({ ...p })),
+  pairs: item.pairs.map((pair) => ({ source: { ...pair.source }, target: { ...pair.target } })),
+}));
+const centroid = (poly: Point[]) => poly.reduce((v, p) => ({ x: v.x + p.x / poly.length, y: v.y + p.y / poly.length }), { x: 0, y: 0 });
+const distance = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
+const pointInside = (point: Point, poly: Point[]) => {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i]; const b = poly[j];
+    if ((a.y > point.y) !== (b.y > point.y) && point.x < ((b.x - a.x) * (point.y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
+  }
+  return inside;
+};
+const transformedPoint = (point: Point, fragment: Fragment) => {
+  const center = centroid(fragment.polygon); const angle = fragment.rotation * Math.PI / 180;
+  const x = point.x - center.x; const y = point.y - center.y;
+  return { x: center.x + fragment.dx + x * Math.cos(angle) - y * Math.sin(angle), y: center.y + fragment.dy + x * Math.sin(angle) + y * Math.cos(angle) };
+};
+const inverseFragmentPoint = (point: Point, fragment: Fragment) => {
+  const center = centroid(fragment.polygon); const angle = -fragment.rotation * Math.PI / 180;
+  const x = point.x - center.x - fragment.dx; const y = point.y - center.y - fragment.dy;
+  return { x: center.x + x * Math.cos(angle) - y * Math.sin(angle), y: center.y + x * Math.sin(angle) + y * Math.cos(angle) };
+};
+
+type MeshPoint = { source: Point; target: Point };
+type Triangle = [number, number, number];
+const circumcircle = (a: Point, b: Point, c: Point) => {
+  const d = 2 * (a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y));
+  if (Math.abs(d) < 1e-9) return { x: 0, y: 0, r2: -1 };
+  const aa = a.x * a.x + a.y * a.y; const bb = b.x * b.x + b.y * b.y; const cc = c.x * c.x + c.y * c.y;
+  const x = (aa * (b.y - c.y) + bb * (c.y - a.y) + cc * (a.y - b.y)) / d;
+  const y = (aa * (c.x - b.x) + bb * (a.x - c.x) + cc * (b.x - a.x)) / d;
+  return { x, y, r2: (x - a.x) ** 2 + (y - a.y) ** 2 };
+};
+const triangulate = (points: Point[]): Triangle[] => {
+  if (points.length < 3) return [];
+  const xs = points.map((p) => p.x); const ys = points.map((p) => p.y);
+  const minX = Math.min(...xs); const minY = Math.min(...ys); const maxX = Math.max(...xs); const maxY = Math.max(...ys);
+  const delta = Math.max(maxX - minX, maxY - minY) * 10 + 1;
+  const all = [...points, { x: minX - delta, y: minY - delta }, { x: minX + (maxX - minX) / 2, y: maxY + delta }, { x: maxX + delta, y: minY - delta }];
+  const n = points.length; let triangles: Triangle[] = [[n, n + 1, n + 2]];
+  for (let index = 0; index < n; index++) {
+    const bad = triangles.filter((tri) => {
+      const circle = circumcircle(all[tri[0]], all[tri[1]], all[tri[2]]);
+      return circle.r2 >= 0 && (all[index].x - circle.x) ** 2 + (all[index].y - circle.y) ** 2 <= circle.r2 + 1e-6;
+    });
+    const edges: [number, number][] = [];
+    bad.forEach((tri) => [[tri[0], tri[1]], [tri[1], tri[2]], [tri[2], tri[0]]].forEach((edge) => {
+      const reverse = edges.findIndex((candidate) => candidate[0] === edge[1] && candidate[1] === edge[0]);
+      if (reverse >= 0) edges.splice(reverse, 1); else edges.push(edge as [number, number]);
+    }));
+    triangles = triangles.filter((tri) => !bad.includes(tri));
+    edges.forEach((edge) => triangles.push([edge[0], edge[1], index]));
+  }
+  return triangles.filter((tri) => tri.every((index) => index < n));
+};
+const applyAffineTriangle = (ctx: CanvasRenderingContext2D, src: Point[], dst: Point[]) => {
+  const [a, b, c] = src; const [u, v, w] = dst;
+  const det = a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y);
+  if (Math.abs(det) < 0.0001) return false;
+  const m11 = (u.x * (b.y - c.y) + v.x * (c.y - a.y) + w.x * (a.y - b.y)) / det;
+  const m12 = (u.y * (b.y - c.y) + v.y * (c.y - a.y) + w.y * (a.y - b.y)) / det;
+  const m21 = (u.x * (c.x - b.x) + v.x * (a.x - c.x) + w.x * (b.x - a.x)) / det;
+  const m22 = (u.y * (c.x - b.x) + v.y * (a.x - c.x) + w.y * (b.x - a.x)) / det;
+  const dx = (u.x * (b.x * c.y - c.x * b.y) + v.x * (c.x * a.y - a.x * c.y) + w.x * (a.x * b.y - b.x * a.y)) / det;
+  const dy = (u.y * (b.x * c.y - c.x * b.y) + v.y * (c.x * a.y - a.x * c.y) + w.y * (a.x * b.y - b.x * a.y)) / det;
+  ctx.transform(m11, m12, m21, m22, dx, dy);
+  return true;
+};
+
+function App() {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const dragRef = useRef<{ kind: 'pan' | 'fragment'; pointer: Point; pan: Point; fragments: Fragment[]; id?: number } | null>(null);
+  const idCounter = useRef(1);
+  const [documentImage, setDocumentImage] = useState<DocumentImage | null>(null);
+  const [fragments, setFragments] = useState<Fragment[]>([]);
+  const [history, setHistory] = useState<Fragment[][]>([[]]);
+  const [historyIndex, setHistoryIndex] = useState(0);
+  const [tool, setTool] = useState<Tool>('select');
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [draftPolygon, setDraftPolygon] = useState<Point[]>([]);
+  const [pendingSource, setPendingSource] = useState<Point | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState<Point>({ x: 0, y: 0 });
+  const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+
+  const selectedFragment = fragments.find((fragment) => fragment.id === selectedId) ?? null;
+  const canUndo = historyIndex > 0;
+  const canRedo = historyIndex < history.length - 1;
+  const canWarp = !!selectedFragment && selectedFragment.pairs.length >= 3;
+
+  const commit = useCallback((next: Fragment[]) => {
+    const clean = cloneFragments(next);
+    setFragments(clean);
+    setHistory((old) => [...old.slice(0, historyIndex + 1), cloneFragments(clean)]);
+    setHistoryIndex(historyIndex + 1);
+  }, [historyIndex]);
+
+  const fitImage = useCallback((size?: { width: number; height: number }) => {
+    if (!documentImage || !wrapRef.current) return;
+    const width = size?.width ?? wrapRef.current.clientWidth;
+    const height = size?.height ?? wrapRef.current.clientHeight;
+    if (!width || !height) return;
+    const nextZoom = Math.min((width - 70) / documentImage.width, (height - 65) / documentImage.height, 1.25);
+    setZoom(nextZoom);
+    setPan({ x: (width - documentImage.width * nextZoom) / 2, y: (height - documentImage.height * nextZoom) / 2 });
+  }, [documentImage]);
+
+  const loadImage = useCallback(async (image: HTMLImageElement, name: string) => {
+    setDocumentImage({ image, name, width: image.naturalWidth, height: image.naturalHeight });
+    setPan({ x: 0, y: 0 });
+    setZoom(1);
+    setFragments([]);
+    setHistory([[]]);
+    setHistoryIndex(0);
+    setSelectedId(null);
+    setDraftPolygon([]);
+    setPendingSource(null);
+    setError('');
+    setNotice('');
+  }, []);
+
+  const loadPdf = useCallback(async (data: ArrayBuffer, name: string) => {
+    const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(data) }).promise;
+    const page = await pdf.getPage(1);
+    const base = page.getViewport({ scale: 1 });
+    const maxEdge = 6000;
+    const maxPixels = 36_000_000;
+    const scale = Math.min(
+      maxEdge / base.width,
+      maxEdge / base.height,
+      Math.sqrt(maxPixels / (base.width * base.height)),
+      8,
+    );
+    const viewport = page.getViewport({ scale: Math.max(1, scale) });
+    const pageCanvas = window.document.createElement('canvas');
+    pageCanvas.width = Math.ceil(viewport.width);
+    pageCanvas.height = Math.ceil(viewport.height);
+    const context = pageCanvas.getContext('2d', { alpha: false });
+    if (!context) throw new Error('Браузер не смог подготовить поверхность для PDF.');
+    await page.render({ canvasContext: context, viewport }).promise;
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      pageCanvas.toBlob((result) => {
+        if (result) resolve(result);
+        else reject(new Error('Не удалось подготовить страницу PDF.'));
+      }, 'image/png');
+    });
+    const objectUrl = URL.createObjectURL(blob);
+    const image = new Image();
+    try {
+      image.src = objectUrl;
+      await image.decode();
+      await loadImage(image, name);
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
+    if (pdf.numPages > 1) {
+      setNotice(`Открыта первая страница из ${pdf.numPages}. Остальные страницы PDF пока не загружены.`);
+    }
+  }, [loadImage]);
+
+  const loadUrl = useCallback(async (url: string, name: string) => {
+    setLoading(true); setError('');
+    try {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error('Файл примера не найден.');
+      const objectUrl = URL.createObjectURL(await response.blob());
+      const image = new Image();
+      try {
+        image.src = objectUrl;
+        await image.decode();
+        await loadImage(image, name);
+      } finally {
+        URL.revokeObjectURL(objectUrl);
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось открыть документ.');
+    } finally {
+      setLoading(false);
+    }
+  }, [loadImage]);
+
+  useEffect(() => {
+    void loadUrl(`${import.meta.env.BASE_URL}example-map.jpg`, 'example-map.jpg');
+  }, [loadUrl]);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(''), 4200);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
+  useEffect(() => {
+    const element = wrapRef.current;
+    if (!element) return;
+    const observer = new ResizeObserver((entries) => {
+      const box = entries[0]?.contentRect;
+      if (box) setCanvasSize({ width: box.width, height: box.height });
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (documentImage && canvasSize.width && canvasSize.height && pan.x === 0 && pan.y === 0) fitImage(canvasSize);
+  }, [documentImage, canvasSize, pan, fitImage]);
+
+  const drawScene = useCallback((ctx: CanvasRenderingContext2D, w: number, h: number, includeGuides: boolean) => {
+    if (!documentImage) return;
+    const { image } = documentImage;
+    const holes = fragments.filter((fragment) => fragment.polygon.length >= 3);
+    ctx.save();
+    if (holes.length) {
+      ctx.beginPath();
+      ctx.rect(0, 0, documentImage.width, documentImage.height);
+      holes.forEach((fragment) => {
+        ctx.moveTo(fragment.polygon[0].x, fragment.polygon[0].y);
+        fragment.polygon.slice(1).forEach((p) => ctx.lineTo(p.x, p.y));
+        ctx.closePath();
+      });
+      try { ctx.clip('evenodd'); } catch { ctx.clip(); }
+    }
+    ctx.drawImage(image, 0, 0);
+    ctx.restore();
+    holes.forEach((fragment) => {
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(fragment.polygon[0].x, fragment.polygon[0].y);
+      fragment.polygon.slice(1).forEach((point) => ctx.lineTo(point.x, point.y));
+      ctx.closePath();
+      ctx.fillStyle = '#d7cbb0';
+      ctx.fill();
+      ctx.restore();
+    });
+    holes.forEach((fragment) => {
+      if (fragment.pairs.length >= 3) {
+        const mesh: MeshPoint[] = fragment.polygon.map((source) => ({ source, target: transformedPoint(source, fragment) }));
+        fragment.pairs.forEach((pair) => mesh.push({
+          source: pair.source,
+          target: transformedPoint(pair.target, fragment),
+        }));
+        const triangles = triangulate(mesh.map((point) => point.source));
+        triangles.forEach((triangle) => {
+          const src = triangle.map((index) => mesh[index].source);
+          const dst = triangle.map((index) => mesh[index].target);
+          const center = { x: (src[0].x + src[1].x + src[2].x) / 3, y: (src[0].y + src[1].y + src[2].y) / 3 };
+          if (!pointInside(center, fragment.polygon)) return;
+          ctx.save();
+          const boundary = fragment.polygon.map((point) => transformedPoint(point, fragment));
+          ctx.beginPath();
+          ctx.moveTo(boundary[0].x, boundary[0].y);
+          boundary.slice(1).forEach((point) => ctx.lineTo(point.x, point.y));
+          ctx.closePath();
+          ctx.clip();
+          ctx.beginPath(); ctx.moveTo(dst[0].x, dst[0].y); ctx.lineTo(dst[1].x, dst[1].y); ctx.lineTo(dst[2].x, dst[2].y); ctx.closePath(); ctx.clip();
+          if (applyAffineTriangle(ctx, src, dst)) ctx.drawImage(image, 0, 0);
+          ctx.restore();
+        });
+      }
+      if (fragment.pairs.length < 3) {
+        ctx.save();
+        const center = centroid(fragment.polygon);
+        ctx.translate(center.x + fragment.dx, center.y + fragment.dy);
+        ctx.rotate(fragment.rotation * Math.PI / 180);
+        ctx.translate(-center.x, -center.y);
+        ctx.beginPath();
+        ctx.moveTo(fragment.polygon[0].x, fragment.polygon[0].y);
+        fragment.polygon.slice(1).forEach((point) => ctx.lineTo(point.x, point.y));
+        ctx.closePath(); ctx.clip();
+        ctx.drawImage(image, 0, 0);
+        ctx.restore();
+      }
+    });
+    if (!includeGuides) return;
+    holes.forEach((fragment) => {
+      ctx.save();
+      const polygon = fragment.polygon.map((point) => transformedPoint(point, fragment));
+      ctx.beginPath(); ctx.moveTo(polygon[0].x, polygon[0].y); polygon.slice(1).forEach((point) => ctx.lineTo(point.x, point.y)); ctx.closePath();
+      ctx.strokeStyle = fragment.id === selectedId ? '#b56549' : '#31594d';
+      ctx.lineWidth = 2 / zoom; ctx.setLineDash([7 / zoom, 5 / zoom]); ctx.stroke(); ctx.setLineDash([]);
+      if (fragment.id === selectedId) polygon.forEach((point) => {
+        ctx.beginPath(); ctx.arc(point.x, point.y, 4 / zoom, 0, Math.PI * 2);
+        ctx.fillStyle = '#f8f1df'; ctx.fill(); ctx.strokeStyle = '#a8553e'; ctx.lineWidth = 1.5 / zoom; ctx.stroke();
+      });
+      ctx.restore();
+      fragment.pairs.forEach((pair, index) => {
+        const source = transformedPoint(pair.source, fragment);
+        const target = transformedPoint(pair.target, fragment);
+        [source, target].forEach((point, pointIndex) => {
+          ctx.beginPath(); ctx.arc(point.x, point.y, 5 / zoom, 0, Math.PI * 2);
+          ctx.fillStyle = pointIndex ? '#b56549' : '#31594d'; ctx.fill(); ctx.strokeStyle = '#fff8e9'; ctx.lineWidth = 1.5 / zoom; ctx.stroke();
+        });
+        ctx.fillStyle = '#fcf8ed'; ctx.font = `${10 / zoom}px "DM Mono", monospace`; ctx.fillText(String(index + 1), source.x + 7 / zoom, source.y - 7 / zoom);
+      });
+    });
+    if (draftPolygon.length) {
+      ctx.save();
+      ctx.beginPath(); ctx.moveTo(draftPolygon[0].x, draftPolygon[0].y);
+      draftPolygon.slice(1).forEach((point) => ctx.lineTo(point.x, point.y));
+      if (draftPolygon.length > 2) ctx.lineTo(draftPolygon[0].x, draftPolygon[0].y);
+      ctx.strokeStyle = '#b56549'; ctx.lineWidth = 2 / zoom; ctx.setLineDash([5 / zoom, 4 / zoom]); ctx.stroke(); ctx.setLineDash([]);
+      draftPolygon.forEach((point, index) => {
+        ctx.beginPath(); ctx.arc(point.x, point.y, (index === 0 ? 5 : 3.5) / zoom, 0, Math.PI * 2);
+        ctx.fillStyle = index === 0 ? '#b56549' : '#f8f1df'; ctx.fill(); ctx.strokeStyle = '#b56549'; ctx.lineWidth = 1.5 / zoom; ctx.stroke();
+      });
+      ctx.restore();
+    }
+    if (pendingSource && selectedFragment) {
+      const marker = transformedPoint(pendingSource, selectedFragment);
+      ctx.beginPath(); ctx.arc(marker.x, marker.y, 6 / zoom, 0, Math.PI * 2);
+      ctx.fillStyle = '#31594d'; ctx.fill(); ctx.strokeStyle = '#fff8e9'; ctx.lineWidth = 2 / zoom; ctx.stroke();
+    }
+  }, [documentImage, fragments, selectedId, zoom, draftPolygon, pendingSource]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const width = canvasSize.width || canvas.clientWidth;
+    const height = canvasSize.height || canvas.clientHeight;
+    if (!width || !height) return;
+    canvas.width = Math.round(width * dpr);
+    canvas.height = Math.round(height * dpr);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+    if (!documentImage) return;
+    ctx.save();
+    ctx.translate(pan.x, pan.y);
+    ctx.scale(zoom, zoom);
+    drawScene(ctx, documentImage.width, documentImage.height, true);
+    ctx.restore();
+  }, [documentImage, fragments, canvasSize, pan, zoom, drawScene]);
+
+  const finishLasso = useCallback(() => {
+    if (draftPolygon.length < 3) {
+      setNotice('Нужно поставить не менее трёх вершин контура.');
+      return;
+    }
+    const fragment: Fragment = { id: idCounter.current++, polygon: draftPolygon.map((p) => ({ ...p })), dx: 0, dy: 0, rotation: 0, pairs: [] };
+    commit([...fragments, fragment]);
+    setSelectedId(fragment.id);
+    setDraftPolygon([]);
+    setTool('select');
+    setNotice(`Фрагмент ${fragments.length + 1} добавлен. Его можно переместить или сопоставить по точкам.`);
+  }, [draftPolygon, fragments, commit]);
+
+  const undo = useCallback(() => {
+    if (!canUndo) return;
+    const index = historyIndex - 1;
+    setHistoryIndex(index);
+    setFragments(cloneFragments(history[index]));
+    setSelectedId(history[index].at(-1)?.id ?? null);
+    setNotice('Изменение отменено.');
+  }, [canUndo, history, historyIndex]);
+  const redo = useCallback(() => {
+    if (!canRedo) return;
+    const index = historyIndex + 1;
+    setHistoryIndex(index);
+    setFragments(cloneFragments(history[index]));
+    setSelectedId(history[index].at(-1)?.id ?? null);
+    setNotice('Изменение восстановлено.');
+  }, [canRedo, history, historyIndex]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
+        event.preventDefault(); if (event.shiftKey) redo(); else undo(); return;
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'y') { event.preventDefault(); redo(); return; }
+      if (event.key === 'Escape') {
+        setDraftPolygon([]); setPendingSource(null); setNotice('Текущий контур или точка отменены.');
+      }
+      if (event.key === 'Enter' && tool === 'lasso') finishLasso();
+      if (!event.ctrlKey && !event.metaKey && event.key.toLowerCase() === 'v') setTool('select');
+      if (!event.ctrlKey && !event.metaKey && event.key.toLowerCase() === 'l') { setTool('lasso'); setDraftPolygon([]); }
+      if (!event.ctrlKey && !event.metaKey && event.key.toLowerCase() === 'p') { setTool('points'); setPendingSource(null); }
+      if (event.key === '+' || event.key === '=') setZoom((value) => Math.min(4, value * 1.15));
+      if (event.key === '-') setZoom((value) => Math.max(.08, value / 1.15));
+      if (event.code === 'Space') { event.preventDefault(); setTool('pan'); }
+    };
+    const onKeyUp = (event: KeyboardEvent) => { if (event.code === 'Space') setTool((current) => current === 'pan' ? 'select' : current); };
+    window.addEventListener('keydown', onKeyDown); window.addEventListener('keyup', onKeyUp);
+    return () => { window.removeEventListener('keydown', onKeyDown); window.removeEventListener('keyup', onKeyUp); };
+  }, [undo, redo, tool, finishLasso]);
+
+  const screenToImage = (event: PointerEvent<HTMLCanvasElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    return { x: (event.clientX - rect.left - pan.x) / zoom, y: (event.clientY - rect.top - pan.y) / zoom };
+  };
+  const onCanvasPointerDown = (event: PointerEvent<HTMLCanvasElement>) => {
+    if (!documentImage) return;
+    const pointer = { x: event.clientX, y: event.clientY };
+    if (tool === 'pan' || event.button === 1 || event.shiftKey) {
+      dragRef.current = { kind: 'pan', pointer, pan: { ...pan }, fragments: cloneFragments(fragments) };
+      event.currentTarget.setPointerCapture(event.pointerId); return;
+    }
+    const imagePoint = screenToImage(event);
+    if (tool === 'lasso') {
+      if (draftPolygon.length >= 3 && distance(imagePoint, draftPolygon[0]) < 13 / zoom) finishLasso();
+      else setDraftPolygon((points) => [...points, imagePoint]);
+      return;
+    }
+    if (tool === 'points') {
+      if (!selectedFragment) { setNotice('Сначала выделите или создайте фрагмент.'); return; }
+      if (!pendingSource) {
+        const sourcePoint = inverseFragmentPoint(imagePoint, selectedFragment);
+        if (!pointInside(sourcePoint, selectedFragment.polygon)) {
+          setNotice('Исходную точку нужно поставить внутри выбранного фрагмента.');
+          return;
+        }
+        setPendingSource(sourcePoint);
+        setNotice('Источник отмечен. Щёлкните по месту, куда этот фрагмент карты должен лечь.');
+      } else {
+        const next = fragments.map((fragment) => fragment.id === selectedFragment.id
+          ? { ...fragment, pairs: [...fragment.pairs, { source: pendingSource, target: inverseFragmentPoint(imagePoint, fragment) }] } : fragment);
+        commit(next); setPendingSource(null);
+        setNotice(`Опорных пар: ${(selectedFragment.pairs.length + 1)}. Для локальной деформации нужно минимум три.`);
+      }
+      return;
+    }
+    const hit = [...fragments].reverse().find((fragment) => pointInside(inverseFragmentPoint(imagePoint, fragment), fragment.polygon));
+    if (hit) {
+      setSelectedId(hit.id);
+      dragRef.current = { kind: 'fragment', pointer, pan: { ...pan }, fragments: cloneFragments(fragments), id: hit.id };
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } else setSelectedId(null);
+  };
+  const onCanvasPointerMove = (event: PointerEvent<HTMLCanvasElement>) => {
+    const drag = dragRef.current;
+    if (!drag) return;
+    const dx = (event.clientX - drag.pointer.x) / zoom;
+    const dy = (event.clientY - drag.pointer.y) / zoom;
+    if (drag.kind === 'pan') setPan({ x: drag.pan.x + event.clientX - drag.pointer.x, y: drag.pan.y + event.clientY - drag.pointer.y });
+    else setFragments(drag.fragments.map((fragment) => fragment.id === drag.id ? { ...fragment, dx: fragment.dx + dx, dy: fragment.dy + dy } : fragment));
+  };
+  const onCanvasPointerUp = () => {
+    const drag = dragRef.current;
+    if (drag?.kind === 'fragment') {
+      commit(fragments);
+    }
+    dragRef.current = null;
+  };
+  const rotateSelected = (degrees: number) => {
+    if (!selectedFragment) return;
+    commit(fragments.map((fragment) => fragment.id === selectedId ? { ...fragment, rotation: fragment.rotation + degrees } : fragment));
+  };
+  const deleteSelected = () => {
+    if (!selectedId) return;
+    commit(fragments.filter((fragment) => fragment.id !== selectedId));
+    setSelectedId(null);
+    setNotice('Фрагмент удалён. Это действие можно отменить.');
+  };
+  const removePair = (index: number) => {
+    if (!selectedFragment) return;
+    commit(fragments.map((fragment) => fragment.id === selectedId ? { ...fragment, pairs: fragment.pairs.filter((_, i) => i !== index) } : fragment));
+  };
+  const onImportFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setLoading(true); setError(''); setNotice('');
+    try {
+      if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+        await loadPdf(await file.arrayBuffer(), file.name);
+        setLoading(false);
+      }
+      else {
+        const url = URL.createObjectURL(file);
+        const image = new Image();
+        image.onload = () => { void loadImage(image, file.name); URL.revokeObjectURL(url); setLoading(false); };
+        image.onerror = () => { URL.revokeObjectURL(url); setError('Не удалось открыть изображение. Проверьте формат файла.'); setLoading(false); };
+        image.src = url;
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось прочитать файл.');
+      setLoading(false);
+    }
+    event.target.value = '';
+  };
+  const exportPng = () => {
+    if (!documentImage) return;
+    const output = window.document.createElement('canvas');
+    output.width = documentImage.width; output.height = documentImage.height;
+    const ctx = output.getContext('2d');
+    if (!ctx) { setError('Не удалось создать экспортное изображение.'); return; }
+    drawScene(ctx, output.width, output.height, false);
+    output.toBlob((blob) => {
+      if (!blob) { setError('Не удалось сформировать PNG.'); return; }
+      const url = URL.createObjectURL(blob);
+      const link = window.document.createElement('a');
+      link.href = url; link.download = `${documentImage.name.replace(/\.[^.]+$/, '')}-исправлено.png`;
+      link.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setNotice('PNG сохранён в исходном разрешении документа.');
+    }, 'image/png');
+  };
+  const percentZoom = `${Math.round(zoom * 100)}%`;
+  const pointCount = useMemo(() => fragments.reduce((sum, fragment) => sum + fragment.pairs.length, 0), [fragments]);
+  const cursorClass = tool === 'pan' ? 'pan' : tool === 'points' ? 'points' : tool === 'select' ? 'move' : '';
+
+  return (
+    <main className="app-shell">
+      <header className="topbar">
+        <div className="brand">
+          <div className="brand-mark" aria-hidden="true"><ScanLine size={19} strokeWidth={1.6} /></div>
+          <div><div className="brand-title">Редактор сканов карт</div><div className="brand-subtitle">стол реставратора · локальная работа</div></div>
+        </div>
+        <div className="top-divider" />
+        <div className="document-name" data-testid="document-name">
+          <strong>{documentImage?.name ?? 'Документ не открыт'}</strong>
+          <span>{documentImage ? `${documentImage.width.toLocaleString('ru-RU')} × ${documentImage.height.toLocaleString('ru-RU')} px · в браузере` : 'Импортируйте скан для начала работы'}</span>
+        </div>
+        <input ref={fileRef} type="file" accept="image/*,application/pdf,.pdf" hidden onChange={onImportFile} data-testid="input-import-document" />
+        <div className="header-actions">
+          <button className="btn" onClick={() => fileRef.current?.click()} data-testid="button-import-document"><FilePlus2 size={15} /><span>Открыть файл</span></button>
+          <button className="btn btn-primary" onClick={exportPng} disabled={!documentImage} data-testid="button-export-png"><ArrowDownToLine size={15} /><span>Экспорт PNG</span></button>
+        </div>
+      </header>
+
+      <section className="workspace">
+        <aside className="rail rail-left">
+          <div className="rail-head">
+            <div className="eyebrow">Рабочий стол / 01</div>
+            <h1 className="section-title">Восстановление</h1>
+          </div>
+          <div className="panel-block">
+            <div className="panel-caption">Инструменты</div>
+            <div className="tool-list">
+              <button className={`tool-button ${tool === 'select' ? 'active' : ''}`} onClick={() => setTool('select')} data-testid="tool-select"><span className="tool-icon"><MousePointer2 size={14} /></span>Выбрать и сдвинуть<span className="shortcut">V</span></button>
+              <button className={`tool-button ${tool === 'lasso' ? 'active' : ''}`} onClick={() => { setTool('lasso'); setDraftPolygon([]); }} data-testid="tool-lasso"><span className="tool-icon"><ScanLine size={14} /></span>Контур фрагмента<span className="shortcut">L</span></button>
+              <button className={`tool-button ${tool === 'points' ? 'active' : ''}`} onClick={() => { setTool('points'); setPendingSource(null); }} data-testid="tool-control-points"><span className="tool-icon"><ArrowLeftRight size={14} /></span>Опорные точки<span className="shortcut">P</span></button>
+              <button className={`tool-button ${tool === 'pan' ? 'active' : ''}`} onClick={() => setTool('pan')} data-testid="tool-pan"><span className="tool-icon"><Hand size={14} /></span>Перемещение вида<span className="shortcut">Пробел</span></button>
+            </div>
+            {tool === 'lasso' && <p className="hint">Щёлкайте по вершинам. Замкните контур кликом по первой точке или нажмите Enter. Escape отменяет контур.</p>}
+            {tool === 'points' && <p className="hint">Для каждой пары: щёлкните исходное место, затем его правильное положение. Три пары и более задают локальную деформацию.</p>}
+          </div>
+          <div className="panel-block">
+            <div className="panel-caption">Слои документа</div>
+            <div className="status-card">
+              <div className="status-row"><span>Исходный лист</span><strong>{documentImage ? 'ОТКРЫТ' : 'НЕТ'}</strong></div>
+              <div className="status-row"><span>Фрагменты</span><strong>{fragments.length.toString().padStart(2, '0')}</strong></div>
+              <div className="status-row"><span>Опорные пары</span><strong>{pointCount.toString().padStart(2, '0')}</strong></div>
+              <div className="status-row"><span>Разрешение</span><strong>{documentImage ? `${Math.round(documentImage.width * documentImage.height / 1_000_000 * 10) / 10} Мп` : '—'}</strong></div>
+            </div>
+            <div style={{ marginTop: 9, display: 'flex', gap: 6 }}>
+              <button className="mini-action" onClick={undo} disabled={!canUndo} data-testid="button-undo"><Undo2 size={13} />Отменить</button>
+              <button className="mini-action" onClick={redo} disabled={!canRedo} data-testid="button-redo"><Redo2 size={13} />Повторить</button>
+            </div>
+          </div>
+          <div className="panel-block" style={{ flex: 1 }}>
+            <div className="panel-caption">Выделенные фрагменты</div>
+            {fragments.length === 0 ? <p className="hint">Пока нет выделенных областей. Обведите повреждённый участок инструментом «Контур фрагмента».</p> : fragments.map((fragment, index) => (
+              <button key={fragment.id} className={`fragment-item ${selectedId === fragment.id ? 'selected' : ''}`} onClick={() => setSelectedId(fragment.id)} data-testid={`fragment-item-${fragment.id}`}>
+                <span className="fragment-num">{String(index + 1).padStart(2, '0')}</span>
+                <span className="fragment-details">Участок карты<small>{fragment.polygon.length} вершин · {fragment.pairs.length} пар</small></span>
+                {selectedId === fragment.id && <Move size={13} color="#597664" />}
+              </button>
+            ))}
+          </div>
+          <div className="panel-block">
+            <div className="eyebrow">Все операции выполняются локально</div>
+            <p className="hint">Скан не покидает это устройство. История доступна до закрытия вкладки.</p>
+          </div>
+        </aside>
+
+        <section className="canvas-column">
+          <div className="toolbar">
+            <div className="toolbar-group">
+              <button className={`btn-icon ${tool === 'select' ? 'active' : ''}`} onClick={() => setTool('select')} title="Выбрать фрагмент" aria-label="Выбрать фрагмент" data-testid="toolbar-select"><MousePointer2 size={15} /></button>
+              <button className={`btn-icon ${tool === 'lasso' ? 'active' : ''}`} onClick={() => { setTool('lasso'); setDraftPolygon([]); }} title="Контур фрагмента" aria-label="Контур фрагмента" data-testid="toolbar-lasso"><ScanLine size={15} /></button>
+              <button className={`btn-icon ${tool === 'points' ? 'active' : ''}`} onClick={() => { setTool('points'); setPendingSource(null); }} title="Опорные точки" aria-label="Опорные точки" data-testid="toolbar-points"><ArrowLeftRight size={15} /></button>
+              <span className="tool-separator" />
+              <button className="btn-icon" onClick={undo} disabled={!canUndo} title="Отменить (Ctrl+Z)" aria-label="Отменить" data-testid="canvas-undo"><Undo2 size={16} /></button>
+              <button className="btn-icon" onClick={redo} disabled={!canRedo} title="Повторить (Ctrl+Shift+Z)" aria-label="Повторить" data-testid="canvas-redo"><Redo2 size={16} /></button>
+              <span className="tool-separator" />
+              <button className="btn-icon" onClick={() => setZoom((value) => Math.max(.08, value / 1.2))} title="Уменьшить" aria-label="Уменьшить" data-testid="zoom-out"><ZoomOut size={16} /></button>
+              <span className="zoom-readout">{percentZoom}</span>
+              <button className="btn-icon" onClick={() => setZoom((value) => Math.min(4, value * 1.2))} title="Увеличить" aria-label="Увеличить" data-testid="zoom-in"><ZoomIn size={16} /></button>
+              <button className="btn-icon" onClick={() => fitImage()} title="Вписать лист" aria-label="Вписать лист" data-testid="zoom-fit"><ScanLine size={16} /></button>
+            </div>
+            <div className="toolbar-group">
+              {selectedFragment && <>
+                <button className="btn-icon" onClick={() => rotateSelected(-1)} title="Повернуть на −1°" aria-label="Повернуть на −1°" data-testid="toolbar-rotate-left"><RotateCcw size={15} /></button>
+                <button className="btn-icon" onClick={() => rotateSelected(1)} title="Повернуть на +1°" aria-label="Повернуть на +1°" data-testid="toolbar-rotate-right"><RotateCw size={15} /></button>
+                <button className="btn-icon" onClick={deleteSelected} title="Удалить фрагмент" aria-label="Удалить фрагмент" data-testid="toolbar-delete-fragment"><X size={15} /></button>
+                <span className="tool-separator" />
+              </>}
+              <button className="btn-icon" onClick={() => setTool('pan')} title="Переместить вид" aria-label="Переместить вид"><Hand size={15} /></button>
+              <span className="tool-separator" />
+              <span className="eyebrow" style={{ letterSpacing: '.08em' }}>{selectedFragment ? `ФРАГМЕНТ ${fragments.findIndex((f) => f.id === selectedId) + 1}` : 'ОБЗОР ЛИСТА'}</span>
+            </div>
+          </div>
+          <div className={`canvas-wrap ${cursorClass}`} ref={wrapRef}>
+            {documentImage && <canvas ref={canvasRef} onPointerDown={onCanvasPointerDown} onPointerMove={onCanvasPointerMove} onPointerUp={onCanvasPointerUp} onPointerCancel={onCanvasPointerUp} onContextMenu={(event) => event.preventDefault()} data-testid="map-canvas" />}
+            {!documentImage && !loading && <div className="canvas-empty"><div className="empty-card"><div className="empty-icon"><FileImage size={23} /></div><h2>Начните с листа карты</h2><p>Откройте изображение или PDF. Пример скана загружается автоматически — если он недоступен, выберите файл вручную.</p><button className="btn btn-primary" onClick={() => fileRef.current?.click()}><FilePlus2 size={15} />Выбрать документ</button></div></div>}
+            {loading && <div className="loading-surface"><div className="loading-box">Подготавливаем скан на этом устройстве<div className="skeleton-line" /><div className="skeleton-line" style={{ width: '72%' }} /></div></div>}
+            {error && <div className="error-banner" role="alert">{error} <button className="btn-icon" onClick={() => setError('')} aria-label="Закрыть сообщение"><X size={13} /></button></div>}
+            {notice && <div className="canvas-overlay" role="status">{notice}</div>}
+          </div>
+          <footer className="canvas-statusbar">
+            <span>{tool === 'lasso' ? 'КОНТУР · КЛИК — ВЕРШИНА · ENTER — ЗАМКНУТЬ · ESC — ОТМЕНА' : tool === 'points' ? pendingSource ? 'ТОЧКИ · ИСТОЧНИК ОТМЕЧЕН · ВЫБЕРИТЕ ЦЕЛЬ' : 'ТОЧКИ · ВЫБЕРИТЕ ИСХОДНУЮ ТОЧКУ' : 'КООРДИНАТЫ В ПИКСЕЛЯХ ИСХОДНОГО СКАНА'}</span>
+            <span>{documentImage ? `${documentImage.width} × ${documentImage.height} PX` : 'НЕТ ДОКУМЕНТА'}</span>
+          </footer>
+        </section>
+
+        <aside className="rail rail-right">
+          <div className="rail-head">
+            <div className="eyebrow">Точная подгонка</div>
+            <h2 className="section-title">Свойства участка</h2>
+          </div>
+          <div className="panel-block right-content">
+            <div className="panel-caption">Геометрия</div>
+            {selectedFragment ? <>
+              <div className="status-card">
+                <div className="status-row"><span>Вершины контура</span><strong>{selectedFragment.polygon.length}</strong></div>
+                <div className="status-row"><span>Сдвиг X</span><strong>{Math.round(selectedFragment.dx)} px</strong></div>
+                <div className="status-row"><span>Сдвиг Y</span><strong>{Math.round(selectedFragment.dy)} px</strong></div>
+                <div className="status-row"><span>Поворот</span><strong>{selectedFragment.rotation.toFixed(1)}°</strong></div>
+              </div>
+              <div className="fragment-actions">
+                <button className="mini-action" onClick={() => rotateSelected(-1)} data-testid="button-rotate-left"><RotateCcw size={13} />−1°</button>
+                <button className="mini-action" onClick={() => rotateSelected(1)} data-testid="button-rotate-right"><RotateCw size={13} />+1°</button>
+                <button className="mini-action" onClick={deleteSelected} title="Удалить фрагмент" data-testid="button-delete-fragment"><X size={13} />Убрать</button>
+              </div>
+              <div className="instruction">Перетащите область на карте. Удерживайте Shift или пробел, чтобы двигать весь лист.</div>
+            </> : <p className="hint">Выберите участок на листе или начертите контур, чтобы увидеть его параметры.</p>}
+          </div>
+          <div className="panel-block right-content">
+            <div className="panel-caption">Сшивка по опорным точкам</div>
+            {!selectedFragment ? <p className="hint">Выделите фрагмент перед созданием пар точек.</p> : <>
+              <p className="hint">Пара задаёт соответствие исходной точки её целевому положению. Деформация строится по треугольной сетке.</p>
+              <div className="control-row">
+                <button className={`btn ${tool === 'points' ? 'btn-primary' : ''}`} onClick={() => { setTool(tool === 'points' ? 'select' : 'points'); setPendingSource(null); }} data-testid="button-add-control-pair"><ArrowLeftRight size={14} />{tool === 'points' ? 'Завершить пары' : 'Поставить пару'}</button>
+              </div>
+              {selectedFragment.pairs.length > 0 && selectedFragment.pairs.map((pair, index) => (
+                <div className="control-pair" key={`${selectedFragment.id}-${index}`}>
+                  <div className="pair-head"><span className="pair-index">{index + 1}</span><span className="eyebrow">Сопоставление</span><button className="btn-icon" onClick={() => removePair(index)} title="Удалить пару" aria-label={`Удалить пару ${index + 1}`}><X size={13} /></button></div>
+                  <div className="point-cell">ИСТОЧНИК<strong>{Math.round(pair.source.x)}, {Math.round(pair.source.y)}</strong></div>
+                  <div className="point-cell">ЦЕЛЬ<strong>{Math.round(pair.target.x)}, {Math.round(pair.target.y)}</strong></div>
+                </div>
+              ))}
+              {selectedFragment.pairs.length > 0 && <button className="mini-action" style={{ width: '100%', marginTop: 8 }} onClick={() => commit(fragments.map((fragment) => fragment.id === selectedId ? { ...fragment, pairs: [] } : fragment))} data-testid="button-clear-pairs"><X size={13} />Очистить пары</button>}
+              <div className="status-row" style={{ marginTop: 11 }}><span>Сетка деформации</span><strong>{canWarp ? 'АКТИВНА' : `${selectedFragment.pairs.length}/3`}</strong></div>
+            </>}
+          </div>
+          <div className="panel-block right-content">
+            <div className="panel-caption">Клавиши и приёмы</div>
+            <div className="status-row"><span>Замкнуть контур</span><strong>ENTER</strong></div>
+            <div className="status-row"><span>Отменить действие</span><strong>CTRL Z</strong></div>
+            <div className="status-row"><span>Масштаб</span><strong>+ / −</strong></div>
+            <div className="status-row"><span>Панорамирование</span><strong>ПРОБЕЛ</strong></div>
+            <p className="hint" style={{ display: 'flex', gap: 6, alignItems: 'flex-start' }}><CircleHelp size={13} style={{ flex: '0 0 auto', marginTop: 2 }} />Лассо — это полигональный контур: кликайте по углам повреждённого листа, не ведите курсор как кистью.</p>
+          </div>
+          <div className="panel-block right-content" style={{ marginTop: 'auto' }}>
+            <div className="eyebrow">Версия 01 · сохранение локально</div>
+            <p className="hint">Экспорт включает исправленную композицию в полном разрешении исходника.</p>
+          </div>
+        </aside>
+      </section>
+    </main>
+  );
+}
+
+export default App;

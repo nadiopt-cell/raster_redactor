@@ -1,0 +1,1 @@
+- [PDF preview performance](pdf-preview-performance.md) — avoid multi-megapixel PDF rasterization during a document editor's first render.
