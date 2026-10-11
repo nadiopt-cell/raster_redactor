@@ -29,6 +29,16 @@ const pointInside = (point: Point, poly: Point[]) => {
   }
   return inside;
 };
+const pointOnOrNearPolygon = (point: Point, poly: Point[], tolerance: number) => {
+  if (pointInside(point, poly)) return true;
+  return poly.some((a, index) => {
+    const b = poly[(index + 1) % poly.length];
+    const dx = b.x - a.x; const dy = b.y - a.y;
+    const lengthSquared = dx * dx + dy * dy;
+    const t = lengthSquared ? Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSquared)) : 0;
+    return Math.hypot(point.x - (a.x + t * dx), point.y - (a.y + t * dy)) <= tolerance;
+  });
+};
 const transformedPoint = (point: Point, fragment: Fragment) => {
   const center = centroid(fragment.polygon); const angle = fragment.rotation * Math.PI / 180;
   const x = point.x - center.x; const y = point.y - center.y;
@@ -366,7 +376,7 @@ function App() {
     setSelectedId(fragment.id);
     setDraftPolygon([]);
     setTool('select');
-    setNotice(`Фрагмент ${fragments.length + 1} добавлен. Его можно переместить или сопоставить по точкам.`);
+    setNotice(`Фрагмент ${fragments.length + 1} добавлен. Перетащите его за область или контур.`);
   }, [draftPolygon, fragments, commit]);
 
   const undo = useCallback(() => {
@@ -416,6 +426,8 @@ function App() {
   };
   const onCanvasPointerDown = (event: PointerEvent<HTMLCanvasElement>) => {
     if (!documentImage) return;
+    if (event.button === 2) return;
+    event.preventDefault();
     const pointer = { x: event.clientX, y: event.clientY };
     if (tool === 'pan' || event.button === 1 || event.shiftKey) {
       dragRef.current = { kind: 'pan', pointer, pan: { ...pan }, fragments: cloneFragments(fragments) };
@@ -445,7 +457,9 @@ function App() {
       }
       return;
     }
-    const hit = [...fragments].reverse().find((fragment) => pointInside(inverseFragmentPoint(imagePoint, fragment), fragment.polygon));
+    const hit = [...fragments].reverse().find((fragment) =>
+      pointOnOrNearPolygon(inverseFragmentPoint(imagePoint, fragment), fragment.polygon, 12 / zoom),
+    );
     if (hit) {
       setSelectedId(hit.id);
       dragRef.current = { kind: 'fragment', pointer, pan: { ...pan }, fragments: cloneFragments(fragments), id: hit.id };
@@ -647,7 +661,7 @@ function App() {
                 <button className="mini-action" onClick={() => rotateSelected(1)} data-testid="button-rotate-right"><RotateCw size={13} />+1°</button>
                 <button className="mini-action" onClick={deleteSelected} title="Удалить фрагмент" data-testid="button-delete-fragment"><X size={13} />Убрать</button>
               </div>
-              <div className="instruction">Перетащите область на карте. Удерживайте Shift или пробел, чтобы двигать весь лист.</div>
+              <div className="instruction">В режиме «Выбрать и сдвинуть» тяните фрагмент за область или пунктирный край. Shift или пробел — двигать весь лист.</div>
             </> : <p className="hint">Выберите участок на листе или начертите контур, чтобы увидеть его параметры.</p>}
           </div>
           <div className="panel-block right-content">
