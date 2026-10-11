@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, ty
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import {
-  ArrowDownToLine, ArrowLeftRight, CircleHelp, FileImage, FilePlus2,
-  Hand, MousePointer2, Move, RotateCcw,
+  ArrowDownToLine, ArrowLeftRight, CircleHelp, Eye, EyeOff, FileImage, FilePlus2,
+  Hand, MousePointer2, RotateCcw,
   RotateCw, ScanLine, Undo2, Redo2, X, ZoomIn, ZoomOut,
 } from 'lucide-react';
 
@@ -11,7 +11,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
 type Point = { x: number; y: number };
 type Pair = { source: Point; target: Point };
-type Fragment = { id: number; polygon: Point[]; dx: number; dy: number; rotation: number; pairs: Pair[] };
+type Fragment = { id: number; polygon: Point[]; dx: number; dy: number; rotation: number; pairs: Pair[]; visible: boolean };
 type DocumentImage = { image: HTMLImageElement; name: string; width: number; height: number };
 type Tool = 'select' | 'lasso' | 'points' | 'pan';
 
@@ -241,7 +241,10 @@ function App() {
   const drawScene = useCallback((ctx: CanvasRenderingContext2D, w: number, h: number, includeGuides: boolean) => {
     if (!documentImage) return;
     const { image } = documentImage;
-    const holes = fragments.filter((fragment) => fragment.polygon.length >= 3);
+    const displayedFragments = includeGuides
+      ? fragments.filter((fragment) => fragment.visible || fragment.id === selectedId)
+      : fragments;
+    const holes = displayedFragments.filter((fragment) => fragment.polygon.length >= 3);
     ctx.save();
     if (holes.length) {
       ctx.beginPath();
@@ -371,7 +374,7 @@ function App() {
       setNotice('Нужно поставить не менее трёх вершин контура.');
       return;
     }
-    const fragment: Fragment = { id: idCounter.current++, polygon: draftPolygon.map((p) => ({ ...p })), dx: 0, dy: 0, rotation: 0, pairs: [] };
+    const fragment: Fragment = { id: idCounter.current++, polygon: draftPolygon.map((p) => ({ ...p })), dx: 0, dy: 0, rotation: 0, pairs: [], visible: false };
     commit([...fragments, fragment]);
     setSelectedId(fragment.id);
     setDraftPolygon([]);
@@ -457,9 +460,11 @@ function App() {
       }
       return;
     }
-    const hit = [...fragments].reverse().find((fragment) =>
-      pointOnOrNearPolygon(inverseFragmentPoint(imagePoint, fragment), fragment.polygon, 12 / zoom),
-    );
+    const hitTest = (fragment: Fragment) =>
+      pointOnOrNearPolygon(inverseFragmentPoint(imagePoint, fragment), fragment.polygon, 12 / zoom);
+    const reverseFragments = [...fragments].reverse();
+    const hit = reverseFragments.find((fragment) => (fragment.visible || fragment.id === selectedId) && hitTest(fragment))
+      ?? reverseFragments.find(hitTest);
     if (hit) {
       setSelectedId(hit.id);
       dragRef.current = { kind: 'fragment', pointer, pan: { ...pan }, fragments: cloneFragments(fragments), id: hit.id };
@@ -490,6 +495,19 @@ function App() {
     commit(fragments.filter((fragment) => fragment.id !== selectedId));
     setSelectedId(null);
     setNotice('Фрагмент удалён. Это действие можно отменить.');
+  };
+  const toggleFragmentVisibility = (id: number) => {
+    const fragment = fragments.find((item) => item.id === id);
+    if (!fragment) return;
+    const visible = !fragment.visible;
+    commit(fragments.map((item) => item.id === id ? { ...item, visible } : item));
+    if (visible) {
+      setSelectedId(id);
+      setNotice('Участок показан на холсте и останется видимым.');
+    } else {
+      if (selectedId === id) setSelectedId(null);
+      setNotice('Участок скрыт на холсте; исправление останется в PNG.');
+    }
   };
   const removePair = (index: number) => {
     if (!selectedFragment) return;
@@ -587,14 +605,26 @@ function App() {
             </div>
           </div>
           <div className="panel-block" style={{ flex: 1 }}>
-            <div className="panel-caption">Выделенные фрагменты</div>
+            <div className="panel-caption">Обработанные участки</div>
             {fragments.length === 0 ? <p className="hint">Пока нет выделенных областей. Обведите повреждённый участок инструментом «Контур фрагмента».</p> : fragments.map((fragment, index) => (
-              <button key={fragment.id} className={`fragment-item ${selectedId === fragment.id ? 'selected' : ''}`} onClick={() => setSelectedId(fragment.id)} data-testid={`fragment-item-${fragment.id}`}>
-                <span className="fragment-num">{String(index + 1).padStart(2, '0')}</span>
-                <span className="fragment-details">Участок карты<small>{fragment.polygon.length} вершин · {fragment.pairs.length} пар</small></span>
-                {selectedId === fragment.id && <Move size={13} color="#597664" />}
-              </button>
+              <div key={fragment.id} className={`fragment-item ${selectedId === fragment.id ? 'selected' : ''}`} data-testid={`fragment-item-${fragment.id}`}>
+                <button className="fragment-select" onClick={() => setSelectedId(fragment.id)} data-testid={`fragment-select-${fragment.id}`}>
+                  <span className="fragment-num">{String(index + 1).padStart(2, '0')}</span>
+                  <span className="fragment-details">Участок карты<small>{fragment.polygon.length} вершин · {fragment.pairs.length} пар</small></span>
+                </button>
+                <button
+                  className={`fragment-visibility ${fragment.visible ? 'visible' : ''}`}
+                  onClick={() => toggleFragmentVisibility(fragment.id)}
+                  title={fragment.visible ? 'Скрыть участок с холста' : 'Закрепить показ на холсте'}
+                  aria-label={fragment.visible ? 'Скрыть участок с холста' : 'Закрепить показ на холсте'}
+                  aria-pressed={fragment.visible}
+                  data-testid={`fragment-visibility-${fragment.id}`}
+                >
+                  {fragment.visible ? <Eye size={15} /> : <EyeOff size={15} />}
+                </button>
+              </div>
             ))}
+            {fragments.length > 0 && <p className="hint">Нажмите на участок, чтобы временно показать его. Значок глаза закрепляет показ; скрытые исправления всё равно попадут в PNG.</p>}
           </div>
           <div className="panel-block">
             <div className="eyebrow">Все операции выполняются локально</div>
