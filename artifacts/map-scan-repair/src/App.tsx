@@ -355,7 +355,7 @@ function App() {
         const mesh: MeshPoint[] = fragment.polygon.map((source) => ({ source, target: transformedPoint(source, fragment) }));
         fragment.pairs.forEach((pair) => mesh.push({
           source: pair.source,
-          target: transformedPoint(pair.target, fragment),
+          target: pair.target,
         }));
         const triangles = triangulate(mesh.map((point) => point.source));
         const boundary = expandPolygon(fragment.polygon.map((point) => transformedPoint(point, fragment)), 0.5);
@@ -408,7 +408,7 @@ function App() {
       ctx.restore();
       fragment.pairs.forEach((pair, index) => {
         const source = transformedPoint(pair.source, fragment);
-        const target = transformedPoint(pair.target, fragment);
+        const target = pair.target;
         [source, target].forEach((point, pointIndex) => {
           ctx.beginPath(); ctx.arc(point.x, point.y, 5 / zoom, 0, Math.PI * 2);
           ctx.fillStyle = pointIndex ? '#b56549' : '#31594d'; ctx.fill(); ctx.strokeStyle = '#fff8e9'; ctx.lineWidth = 1.5 / zoom; ctx.stroke();
@@ -525,7 +525,7 @@ function App() {
         setNotice('Источник отмечен. Щёлкните по месту, куда этот фрагмент карты должен лечь.');
       } else {
         const next = fragments.map((fragment) => fragment.id === selectedFragment.id
-          ? { ...fragment, pairs: [...fragment.pairs, { source: pendingSource, target: inverseFragmentPoint(imagePoint, fragment) }] } : fragment);
+          ? { ...fragment, pairs: [...fragment.pairs, { source: pendingSource, target: imagePoint }] } : fragment);
         commit(next); setPendingSource(null);
         setNotice(`Опорных пар: ${(selectedFragment.pairs.length + 1)}. Для локальной деформации нужно минимум три.`);
       }
