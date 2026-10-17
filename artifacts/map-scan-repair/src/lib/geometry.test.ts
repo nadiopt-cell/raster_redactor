@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
-  applyAffineTriangle, cloneFragments, distance, inverseFragmentPoint,
-  pointInside, pointOnOrNearPolygon, transformedPoint, triangulate,
+  applyAffineTriangle, buildMesh, cachedCentroid, centroid, cloneFragments, distance,
+  expandPolygon, inverseFragmentPoint, pointInside, pointOnOrNearPolygon,
+  sourceBBox, transformedPoint, triangulate,
 } from './geometry';
 import type { Fragment, Point } from './types';
 
@@ -135,5 +136,108 @@ describe('cloneFragments', () => {
     expect(clone).toEqual(fragment);
     expect(clone.polygon[0]).not.toBe(fragment.polygon[0]);
     expect(clone.pairs[0].source).not.toBe(fragment.pairs[0].source);
+  });
+});
+
+describe('buildMesh', () => {
+  it('при нулевом сдвиге mesh совпадает с сырыми координатами', () => {
+    const fragment = makeFragment({ pairs: [{ source: { x: 40, y: 40 }, target: { x: 60, y: 50 } }] });
+    const mesh = buildMesh(fragment);
+    expect(mesh).toHaveLength(5);
+    mesh.slice(0, 4).forEach((point, index) => {
+      expect(point.source).toEqual(fragment.polygon[index]);
+      expect(point.target).toEqual(fragment.polygon[index]);
+    });
+    expect(mesh[4]).toEqual({ source: { x: 40, y: 40 }, target: { x: 60, y: 50 } });
+  });
+
+  it('РЕГРЕССИЯ P0: сдвиг фрагмента переносит и вершины, и цели пар на один вектор', () => {
+    const pairs = [{ source: { x: 30, y: 30 }, target: { x: 80, y: 90 } }];
+    const meshBase = buildMesh(makeFragment({ pairs }));
+    const meshDragged = buildMesh(makeFragment({ dx: 15, dy: -7, pairs }));
+    meshBase.forEach((point, index) => {
+      expect(meshDragged[index].target.x).toBeCloseTo(point.target.x + 15, 8);
+      expect(meshDragged[index].target.y).toBeCloseTo(point.target.y - 7, 8);
+    });
+    // Источники не двигаются: текстура берётся из исходного места скана.
+    meshBase.forEach((point, index) => expect(meshDragged[index].source).toEqual(point.source));
+  });
+
+  it('РЕГРЕССИЯ P0: поворот вращает цели пар так же, как вершины полигона', () => {
+    // Цель пары совпадает с вершиной (0,0): после поворота она обязана
+    // отобразиться в ту же точку, что и сама вершина — иначе сшивка рвётся.
+    const fragment = makeFragment({ rotation: 30, pairs: [{ source: { x: 50, y: 50 }, target: { x: 0, y: 0 } }] });
+    const mesh = buildMesh(fragment);
+    expect(mesh[4].target).toEqual(mesh[0].target);
+  });
+});
+
+describe('sourceBBox', () => {
+  it('возвращает bbox с запасом внутри изображения', () => {
+    expect(sourceBBox([{ x: 10, y: 20 }, { x: 30, y: 40 }], 2, 1000, 1000))
+      .toEqual({ sx: 8, sy: 18, sw: 24, sh: 24 });
+  });
+
+  it('клампит к левому/верхнему краю', () => {
+    const box = sourceBBox([{ x: -5, y: -5 }, { x: 10, y: 10 }], 2, 1000, 1000);
+    expect(box.sx).toBe(0);
+    expect(box.sy).toBe(0);
+    expect(box.sw).toBe(12);
+    expect(box.sh).toBe(12);
+  });
+
+  it('клампит к правому/нижнему краю', () => {
+    const box = sourceBBox([{ x: 990, y: 990 }, { x: 1100, y: 1200 }], 2, 1000, 1000);
+    expect(box.sx).toBe(988);
+    expect(box.sy).toBe(988);
+    expect(box.sw).toBe(12);
+    expect(box.sh).toBe(12);
+  });
+
+  it('полигон целиком вне изображения даёт нулевой bbox', () => {
+    const box = sourceBBox([{ x: -100, y: -100 }, { x: -50, y: -50 }], 2, 1000, 1000);
+    expect(box.sw).toBe(0);
+    expect(box.sh).toBe(0);
+  });
+});
+
+describe('expandPolygon', () => {
+  it('отодвигает точки от центроида на заданное расстояние', () => {
+    const expanded = expandPolygon(square(), 5);
+    // Для вершины (0,0) квадрата 100×100: направление к углу, смещение ровно 5.
+    expect(expanded[0].x).toBeCloseTo(-5 / Math.SQRT2, 8);
+    expect(expanded[0].y).toBeCloseTo(-5 / Math.SQRT2, 8);
+    expect(distance(expanded[0], { x: 0, y: 0 })).toBeCloseTo(5, 8);
+  });
+
+  it('вырожденный полигон из одинаковых точек не даёт NaN', () => {
+    const expanded = expandPolygon([{ x: 5, y: 5 }, { x: 5, y: 5 }], 3);
+    expanded.forEach((point) => {
+      expect(Number.isFinite(point.x)).toBe(true);
+      expect(Number.isFinite(point.y)).toBe(true);
+    });
+  });
+});
+
+describe('centroid / cachedCentroid', () => {
+  it('считает среднее вершин', () => {
+    expect(centroid(square())).toEqual({ x: 50, y: 50 });
+  });
+
+  it('кеш: тот же массив — тот же объект, новый массив — новый расчёт', () => {
+    const poly = square();
+    const first = cachedCentroid(poly);
+    expect(cachedCentroid(poly)).toBe(first);
+    const moved = poly.map((point) => ({ ...point, x: point.x + 100 }));
+    const second = cachedCentroid(moved);
+    expect(second).toEqual({ x: 150, y: 50 });
+    expect(second).not.toBe(first);
+  });
+});
+
+describe('distance', () => {
+  it('евклидово расстояние', () => {
+    expect(distance({ x: 0, y: 0 }, { x: 3, y: 4 })).toBe(5);
+    expect(distance({ x: 2, y: 2 }, { x: 2, y: 2 })).toBe(0);
   });
 });

@@ -78,6 +78,17 @@ export const inverseFragmentPoint = (point: Point, fragment: Fragment) => {
   return { x: center.x + x * Math.cos(angle) - y * Math.sin(angle), y: center.y + x * Math.sin(angle) + y * Math.cos(angle) };
 };
 
+// Единая сборка mesh-а для деформации: цели опорных пар проходят через тот же
+// rigid-оператор (transformedPoint), что и вершины полигона. Благодаря этому
+// перетаскивание и поворот фрагмента переносят сшитый результат целиком,
+// не разрывая деформацию между границей и якорями пар.
+// Источники остаются raw: текстура всегда берётся из исходного места скана.
+export const buildMesh = (fragment: Fragment): MeshPoint[] => {
+  const mesh: MeshPoint[] = fragment.polygon.map((source) => ({ source, target: transformedPoint(source, fragment) }));
+  fragment.pairs.forEach((pair) => mesh.push({ source: pair.source, target: transformedPoint(pair.target, fragment) }));
+  return mesh;
+};
+
 export const circumcircle = (a: Point, b: Point, c: Point) => {
   const d = 2 * (a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y));
   if (Math.abs(d) < 1e-9) return { x: 0, y: 0, r2: -1 };

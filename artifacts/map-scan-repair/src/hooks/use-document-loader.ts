@@ -1,10 +1,28 @@
 import { useCallback, useEffect, useRef } from 'react';
-import * as pdfjsLib from 'pdfjs-dist';
+import { describeLoadError, isPdfFile, isTiffFile } from '@/lib/load-utils';
 
 const MAX_PDF_EDGE = 6000;
 const MAX_PDF_PIXELS = 36_000_000;
 const MAX_PDF_SCALE = 8;
 const MIN_PDF_SCALE = 0.05;
+
+type PdfjsModule = typeof import('pdfjs-dist');
+let pdfjsPromise: Promise<PdfjsModule> | null = null;
+
+// pdf.js — самая тяжёлая часть бандла: грузим лениво при первом PDF,
+// чтобы основной чанк редактора оставался лёгким.
+const getPdfjs = () => {
+  if (!pdfjsPromise) {
+    pdfjsPromise = Promise.all([
+      import('pdfjs-dist'),
+      import('pdfjs-dist/build/pdf.worker.min.mjs?url'),
+    ]).then(([lib, worker]) => {
+      lib.GlobalWorkerOptions.workerSrc = (worker as { default: string }).default;
+      return lib;
+    });
+  }
+  return pdfjsPromise;
+};
 
 /**
  * Загрузка документов: PDF через pdf.js, файлы пользователя и автопример.
@@ -20,7 +38,8 @@ export function useDocumentLoader(
   const loadTokenRef = useRef(0);
   const userFileLoadedRef = useRef(false);
 
-  const loadPdf = useCallback(async (data: ArrayBuffer, name: string) => {
+  const loadPdf = useCallback(async (data: ArrayBuffer, name: string, token: number) => {
+    const pdfjsLib = await getPdfjs();
     const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(data), isEvalSupported: false }).promise;
     try {
       const page = await pdf.getPage(1);
@@ -42,11 +61,10 @@ export function useDocumentLoader(
         const context = pageCanvas.getContext('2d', { alpha: false });
         if (!context) throw new Error('Браузер не смог подготовить поверхность для PDF.');
         await page.render({ canvasContext: context, viewport }).promise;
-        page.cleanup();
         const blob = await new Promise<Blob>((resolve, reject) => {
           pageCanvas.toBlob((result) => {
             if (result) resolve(result);
-            else reject(new Error('Не удалось подготовить страницу PDF.'));
+            else reject(new Error('Не удалось отрисовать страницу PDF — документ может быть повреждён.'));
           }, 'image/png');
         });
         const objectUrl = URL.createObjectURL(blob);
@@ -54,6 +72,9 @@ export function useDocumentLoader(
         try {
           image.src = objectUrl;
           await image.decode();
+          // Токен: пользователь мог открыть другой файл, пока PDF рендерился.
+          // Без проверки устаревший PDF перезаписал бы более свежую загрузку.
+          if (token !== loadTokenRef.current) return;
           await loadImage(image, name);
         } finally {
           URL.revokeObjectURL(objectUrl);
@@ -92,7 +113,7 @@ export function useDocumentLoader(
       }
     } catch (caught) {
       if (token !== loadTokenRef.current) return;
-      setError(caught instanceof Error ? caught.message : 'Не удалось открыть документ.');
+      setError(describeLoadError(caught));
     } finally {
       if (token === loadTokenRef.current) setLoading(false);
     }
@@ -102,14 +123,14 @@ export function useDocumentLoader(
     const token = ++loadTokenRef.current;
     userFileLoadedRef.current = true;
     // Браузеры не декодируют TIFF, хотя accept="image/*" его пропускает: объясняем это сразу, а не через «не удалось открыть».
-    if (file.type === 'image/tiff' || /\.tiff?$/i.test(file.name)) {
+    if (isTiffFile(file)) {
       setError('Формат TIFF не поддерживается браузером — сохраните скан как PNG, JPEG или PDF.');
       return;
     }
     setLoading(true); setError(''); setNotice('');
     try {
-      if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
-        await loadPdf(await file.arrayBuffer(), file.name);
+      if (isPdfFile(file)) {
+        await loadPdf(await file.arrayBuffer(), file.name, token);
         if (token === loadTokenRef.current) setLoading(false);
       }
       else {
@@ -131,7 +152,7 @@ export function useDocumentLoader(
       }
     } catch (caught) {
       if (token !== loadTokenRef.current) return;
-      setError(caught instanceof Error ? caught.message : 'Не удалось прочитать файл.');
+      setError(describeLoadError(caught));
       setLoading(false);
     }
   }, [loadImage, loadPdf, setError, setLoading, setNotice]);

@@ -10,6 +10,7 @@ export function useViewport(
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const fitZoomRef = useRef(1);
   const needsFitRef = useRef(false);
+  const prevSizeRef = useRef({ width: 0, height: 0 });
 
   const fitImage = useCallback((size?: { width: number; height: number }) => {
     if (!documentImage || !wrapRef.current) return;
@@ -24,6 +25,8 @@ export function useViewport(
   }, [documentImage, wrapRef]);
 
   const zoomAt = (point: Point, factor: number) => {
+    // Без документа зум «в пустоту» только меняет счётчик процентов — не даём.
+    if (!documentImage) return;
     const minZoom = Math.min(0.08, fitZoomRef.current);
     const next = Math.max(minZoom, Math.min(4, zoom * factor));
     if (next === zoom) return;
@@ -57,7 +60,18 @@ export function useViewport(
     if (!element) return;
     const observer = new ResizeObserver((entries) => {
       const box = entries[0]?.contentRect;
-      if (box) setCanvasSize({ width: box.width, height: box.height });
+      if (!box) return;
+      const prev = prevSizeRef.current;
+      const next = { width: box.width, height: box.height };
+      prevSizeRef.current = next;
+      setCanvasSize(next);
+      // При изменении контейнера держим центр документа у центра холста:
+      // иначе после resize окна документ может уехать за край.
+      if (prev.width > 0 && prev.height > 0) {
+        const dx = (next.width - prev.width) / 2;
+        const dy = (next.height - prev.height) / 2;
+        setPan((current) => ({ x: current.x + dx, y: current.y + dy }));
+      }
     });
     observer.observe(element);
     return () => observer.disconnect();

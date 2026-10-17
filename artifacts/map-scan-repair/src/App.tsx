@@ -1,6 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type PointerEvent } from 'react';
-import * as pdfjsLib from 'pdfjs-dist';
-import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { ScanLine } from 'lucide-react';
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
@@ -14,14 +12,11 @@ import { useHistory } from '@/hooks/use-history';
 import { useDocumentLoader } from '@/hooks/use-document-loader';
 import { useViewport } from '@/hooks/use-viewport';
 import {
-  applyAffineTriangle, cachedCentroid, cloneFragments, distance,
+  applyAffineTriangle, buildMesh, cachedCentroid, cloneFragments, distance,
   expandPolygon, inverseFragmentPoint, pointInside, pointOnOrNearPolygon,
   sourceBBox, transformedPoint, triangulate,
-  type MeshPoint,
 } from '@/lib/geometry';
 import type { DocumentImage, Fragment, Point, Tool } from '@/lib/types';
-
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
 // Лимиты холста браузера: сторона не более 32767 px, консервативная площадь 100 Мп (Safari/iOS).
 const MAX_CANVAS_EDGE = 32_767;
@@ -34,6 +29,9 @@ function App() {
   const wrapRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const dragRef = useRef<{ kind: 'pan' | 'fragment'; pointer: Point; pan: Point; fragments: Fragment[]; id?: number } | null>(null);
+  // Актуальное состояние fragments на время drag: указатель события может отставать
+  // от React-рендеров, а commit при pointerup обязан видеть финальную позицию.
+  const dragLatestRef = useRef<Fragment[] | null>(null);
   const spacePanRef = useRef(false);
   const prevToolRef = useRef<Tool>('select');
   const idCounter = useRef(1);
@@ -103,16 +101,16 @@ function App() {
       fragment.polygon.slice(1).forEach((point) => ctx.lineTo(point.x, point.y));
       ctx.closePath();
       ctx.fillStyle = VACATED_FILL;
-      ctx.fill();
+      // even-odd — то же правило, по которому работает pointInside (хит-тест):
+      // иначе на самопересекающемся контуре заливка и захват расходятся.
+      ctx.fill('evenodd');
       ctx.restore();
     });
     holes.forEach((fragment) => {
       if (fragment.pairs.length >= 3) {
-        const mesh: MeshPoint[] = fragment.polygon.map((source) => ({ source, target: transformedPoint(source, fragment) }));
-        fragment.pairs.forEach((pair) => mesh.push({
-          source: pair.source,
-          target: pair.target,
-        }));
+        // Пары проходят через тот же rigid-оператор, что и вершины полигона:
+        // drag/rotate переносят сшитый результат целиком, не разрывая деформацию.
+        const mesh = buildMesh(fragment);
         const triangles = triangulate(mesh.map((point) => point.source));
         const boundary = expandPolygon(fragment.polygon.map((point) => transformedPoint(point, fragment)), 0.5);
         triangles.forEach((triangle) => {
@@ -125,7 +123,7 @@ function App() {
           ctx.moveTo(boundary[0].x, boundary[0].y);
           boundary.slice(1).forEach((point) => ctx.lineTo(point.x, point.y));
           ctx.closePath();
-          ctx.clip();
+          ctx.clip('evenodd');
           const expandedDst = expandPolygon(dst, 0.5);
           ctx.beginPath(); ctx.moveTo(expandedDst[0].x, expandedDst[0].y); ctx.lineTo(expandedDst[1].x, expandedDst[1].y); ctx.lineTo(expandedDst[2].x, expandedDst[2].y); ctx.closePath(); ctx.clip();
           if (applyAffineTriangle(ctx, src, dst)) {
@@ -144,7 +142,7 @@ function App() {
         ctx.beginPath();
         ctx.moveTo(fragment.polygon[0].x, fragment.polygon[0].y);
         fragment.polygon.slice(1).forEach((point) => ctx.lineTo(point.x, point.y));
-        ctx.closePath(); ctx.clip();
+        ctx.closePath(); ctx.clip('evenodd');
         const box = sourceBBox(fragment.polygon, 2, w, h);
         if (box.sw > 0 && box.sh > 0) ctx.drawImage(image, box.sx, box.sy, box.sw, box.sh, box.sx, box.sy, box.sw, box.sh);
         ctx.restore();
@@ -164,7 +162,9 @@ function App() {
       ctx.restore();
       fragment.pairs.forEach((pair, index) => {
         const source = transformedPoint(pair.source, fragment);
-        const target = pair.target;
+        // Цель рисуется через тот же оператор, что и в mesh (buildMesh):
+        // маркер стоит ровно там, куда реально попадает содержимое пары.
+        const target = transformedPoint(pair.target, fragment);
         [source, target].forEach((point, pointIndex) => {
           ctx.beginPath(); ctx.arc(point.x, point.y, 5 / zoom, 0, Math.PI * 2);
           ctx.fillStyle = pointIndex ? '#b56549' : '#31594d'; ctx.fill(); ctx.strokeStyle = '#fff8e9'; ctx.lineWidth = 1.5 / zoom; ctx.stroke();
@@ -245,6 +245,11 @@ function App() {
     }
     const imagePoint = screenToImage(event);
     if (tool === 'lasso') {
+      // Контур вне листа даёт «пустой» фрагмент (bbox вырождается) — не даём ставить вершины мимо скана.
+      if (imagePoint.x < 0 || imagePoint.y < 0 || imagePoint.x > documentImage.width || imagePoint.y > documentImage.height) {
+        setNotice('Контур нужно обводить внутри листа скана.');
+        return;
+      }
       if (draftPolygon.length >= 3 && distance(imagePoint, draftPolygon[0]) < 13 / zoom) finishLasso();
       else setDraftPolygon((points) => [...points, imagePoint]);
       return;
@@ -275,6 +280,7 @@ function App() {
     const hit = reverseFragments.find((fragment) => (fragment.visible || fragment.id === selectedId) && hitTest(fragment));
     if (hit) {
       setSelectedId(hit.id);
+      dragLatestRef.current = null;
       dragRef.current = { kind: 'fragment', pointer, pan: { ...pan }, fragments: cloneFragments(fragments), id: hit.id };
       event.currentTarget.setPointerCapture(event.pointerId);
     } else setSelectedId(null);
@@ -288,7 +294,9 @@ function App() {
     }
     const dx = (point.x - drag.pointer.x) / zoom;
     const dy = (point.y - drag.pointer.y) / zoom;
-    setFragments(drag.fragments.map((fragment) => fragment.id === drag.id ? { ...fragment, dx: fragment.dx + dx, dy: fragment.dy + dy } : fragment));
+    const next = drag.fragments.map((fragment) => fragment.id === drag.id ? { ...fragment, dx: fragment.dx + dx, dy: fragment.dy + dy } : fragment);
+    dragLatestRef.current = next;
+    setFragments(next);
   };
   const onCanvasPointerMove = (event: PointerEvent<HTMLCanvasElement>) => {
     if (!dragRef.current) return;
@@ -312,11 +320,16 @@ function App() {
     if (pending) applyDragMove(pending);
     const drag = dragRef.current;
     if (drag?.kind === 'fragment') {
+      // Читаем позицию из ref, а не из closure: последний applyDragMove мог
+      // обновить состояние, которое сюда ещё не «доехало» рендером.
+      const latest = dragLatestRef.current ?? drag.fragments;
       const start = drag.fragments.find((fragment) => fragment.id === drag.id);
-      const current = fragments.find((fragment) => fragment.id === drag.id);
-      const moved = !start || !current || Math.hypot(current.dx - start.dx, current.dy - start.dy) > 0.5;
-      if (moved) commit(fragments);
+      const current = latest.find((fragment) => fragment.id === drag.id);
+      const moved = !!start && !!current && Math.hypot(current.dx - start.dx, current.dy - start.dy) > 0.5;
+      if (moved) commit(latest);
+      else if (dragLatestRef.current) setFragments(latest); // микросдвиг — в состоянии, но не в истории
     }
+    dragLatestRef.current = null;
     dragRef.current = null;
   };
   const rotateSelected = (degrees: number) => {
@@ -359,7 +372,7 @@ function App() {
         event.preventDefault(); if (event.shiftKey) redo(); else undo(); return;
       }
       if ((event.ctrlKey || event.metaKey) && event.code === 'KeyY') { event.preventDefault(); redo(); return; }
-      if (event.key === 'Escape') {
+      if (event.key === 'Escape' && (draftPolygon.length > 0 || pendingSource)) {
         setDraftPolygon([]); setPendingSource(null); setNotice('Текущий контур или точка отменены.');
       }
       if (event.key === 'Enter' && tool === 'lasso') finishLasso();
@@ -392,7 +405,7 @@ function App() {
     };
     window.addEventListener('keydown', onKeyDown); window.addEventListener('keyup', onKeyUp);
     return () => { window.removeEventListener('keydown', onKeyDown); window.removeEventListener('keyup', onKeyUp); };
-  }, [undo, redo, tool, finishLasso, selectedId, deleteSelected, zoomAtRef, canvasCenter]);
+  }, [undo, redo, tool, finishLasso, selectedId, deleteSelected, zoomAtRef, canvasCenter, draftPolygon, pendingSource]);
 
   const onImportFile = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -418,7 +431,7 @@ function App() {
     }
     try {
       output.toBlob((blob) => {
-        if (!blob) { setError('Не удалось сформировать PNG.'); return; }
+        if (!blob) { setError('Не удалось сформировать PNG — вероятно, размер превышает лимиты браузера. Уменьшите скан и попробуйте снова.'); return; }
         const url = URL.createObjectURL(blob);
         const link = window.document.createElement('a');
         link.href = url; link.download = `${documentImage.name.replace(/\.[^.]+$/, '')}-исправлено.png`;
