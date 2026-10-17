@@ -5,6 +5,9 @@ cd /d "%~dp0"
 
 rem Порт можно переопределить перед запуском: set PORT=8080
 if "%PORT%"=="" set "PORT=3000"
+rem Локальный запуск слушаем только на 127.0.0.1 - редактор не виден из локальной сети.
+rem (Replit-хостинг задаёт свой HOST и продолжит работать на 0.0.0.0.)
+set "HOST=127.0.0.1"
 
 echo ====================================================
 echo   Редактор сканов карт - запуск
@@ -43,9 +46,8 @@ if not errorlevel 1 (
 )
 
 echo.
-echo Запускаю сервер: http://localhost:%PORT%
+echo Запускаю сервер: http://localhost:%PORT% (доступен только на этом компьютере)
 echo Остановить сервер: Ctrl+C в этом окне.
-echo Если Windows спросит про брандмауэр - разрешите доступ.
 echo.
 start "" cmd /c "timeout /t 4 /nobreak >nul & start "" http://localhost:%PORT%"
 call pnpm --filter @workspace/map-scan-repair serve
@@ -53,9 +55,8 @@ goto :eof
 
 :dev
 echo.
-echo Режим разработки: http://localhost:%PORT%
+echo Режим разработки: http://localhost:%PORT% (доступен только на этом компьютере)
 echo Остановить сервер: Ctrl+C в этом окне.
-echo Если Windows спросит про брандмауэр - разрешите доступ.
 echo.
 start "" cmd /c "timeout /t 6 /nobreak >nul & start "" http://localhost:%PORT%"
 call pnpm --filter @workspace/map-scan-repair dev

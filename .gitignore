@@ -50,3 +50,6 @@ Thumbs.db
 
 # Replit conversation history (не часть приложения)
 .conversation/
+
+# Локальный мусор приложений (профиль Chromium и т.п.)
+.config/

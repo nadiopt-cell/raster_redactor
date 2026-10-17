@@ -22,6 +22,9 @@ export default defineConfig(async ({ command }) => {
   }
 
   const basePath = process.env.BASE_PATH ?? '/';
+  // По умолчанию 0.0.0.0 — так требует хостинг Replit; локальному запуску (start.bat)
+  // достаточно 127.0.0.1, чтобы редактор не был виден из локальной сети.
+  const host = process.env.HOST ?? '0.0.0.0';
 
   return {
     base: basePath,
@@ -46,12 +49,6 @@ export default defineConfig(async ({ command }) => {
     resolve: {
       alias: {
         '@': path.resolve(import.meta.dirname, 'src'),
-        '@assets': path.resolve(
-          import.meta.dirname,
-          '..',
-          '..',
-          'attached_assets',
-        ),
       },
       dedupe: ['react', 'react-dom'],
     },
@@ -63,7 +60,7 @@ export default defineConfig(async ({ command }) => {
     server: {
       port,
       strictPort: true,
-      host: '0.0.0.0',
+      host,
       allowedHosts: true,
       fs: {
         strict: true,
@@ -71,7 +68,7 @@ export default defineConfig(async ({ command }) => {
     },
     preview: {
       port,
-      host: '0.0.0.0',
+      host,
       allowedHosts: true,
     },
   };

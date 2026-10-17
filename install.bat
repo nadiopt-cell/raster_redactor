@@ -44,7 +44,16 @@ if "!PNPM_OK!"=="0" (
     pause
     exit /b 1
   )
+  rem Перепроверяем версию: если pnpm стоит через corepack, npm-установка его не перекроет.
   for /f "delims=" %%v in ('pnpm -v') do set "PNPM_VER=%%v"
+  if not "!PNPM_VER:~0,3!"=="10." (
+    echo [ОШИБКА] После установки pnpm версия осталась: !PNPM_VER!
+    echo Вероятно, pnpm управляется corepack. Выполните в командной строке:
+    echo   corepack enable pnpm
+    echo затем закройте это окно и запустите install.bat снова.
+    pause
+    exit /b 1
+  )
   echo [OK] pnpm !PNPM_VER!
 )
 
