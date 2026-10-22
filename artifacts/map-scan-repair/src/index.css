@@ -141,6 +141,10 @@
 .fragment-select { flex: 1; min-width: 0; border: 0; padding: 5px 3px; display: flex; gap: 9px; align-items: center; background: transparent; color: inherit; text-align: left; cursor: pointer; }
 .fragment-visibility { width: 30px; height: 30px; flex: 0 0 30px; border: 1px solid transparent; border-radius: 4px; display: grid; place-items: center; background: transparent; color: #8b9085; cursor: pointer; }
 .fragment-visibility:hover { background: #e9e5d9; color: #425e4d; }
+.fragment-delete { width: 30px; height: 30px; flex: 0 0 30px; border: 1px solid transparent; border-radius: 4px; display: grid; place-items: center; background: transparent; color: #8b9085; cursor: pointer; }
+.fragment-delete:hover { background: #f3dfd7; color: #a8553e; border-color: #e3bfb2; }
+.fragment-delete:focus-visible { outline: 2px solid #a8553e; outline-offset: 1px; }
+.mini-action:disabled { opacity: .45; cursor: not-allowed; }
 .fragment-visibility.visible { color: #31594d; background: #e2e8dc; border-color: #c0cdbd; }
 .fragment-num { width: 22px; height: 22px; flex: 0 0 22px; display: grid; place-items: center; background: #31594d; color: #faf5e9; border-radius: 50%; font: 10px var(--app-font-mono); }
 .fragment-details { min-width: 0; display: flex; flex-direction: column; gap: 3px; font-size: 10px; font-weight: 700; }

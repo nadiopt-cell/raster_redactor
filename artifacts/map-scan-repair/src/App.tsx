@@ -16,6 +16,7 @@ import {
   expandPolygon, inverseFragmentPoint, pointInside, pointOnOrNearPolygon,
   sourceBBox, transformedPoint, triangulate,
 } from '@/lib/geometry';
+import { exportableFragments, nearestPointIndex, removePointAt } from '@/lib/fragments';
 import type { DocumentImage, Fragment, Point, Tool } from '@/lib/types';
 
 // Лимиты холста браузера: сторона не более 32767 px, консервативная площадь 100 Мп (Safari/iOS).
@@ -89,9 +90,10 @@ function App() {
   const drawScene = useCallback((ctx: CanvasRenderingContext2D, w: number, h: number, includeGuides: boolean) => {
     if (!documentImage) return;
     const { image } = documentImage;
+    // На холсте скрытый участок временно виден, пока выбран. В экспорт попадают только видимые (закреплённые глазком).
     const displayedFragments = includeGuides
       ? fragments.filter((fragment) => fragment.visible || fragment.id === selectedId)
-      : fragments;
+      : exportableFragments(fragments);
     const holes = displayedFragments.filter((fragment) => fragment.polygon.length >= 3);
     ctx.drawImage(image, 0, 0);
     holes.forEach((fragment) => {
@@ -222,7 +224,7 @@ function App() {
       setNotice('Нужно поставить не менее трёх вершин контура.');
       return;
     }
-    const fragment: Fragment = { id: idCounter.current++, polygon: draftPolygon.map((p) => ({ ...p })), dx: 0, dy: 0, rotation: 0, pairs: [], visible: false };
+    const fragment: Fragment = { id: idCounter.current++, polygon: draftPolygon.map((p) => ({ ...p })), dx: 0, dy: 0, rotation: 0, pairs: [], visible: true };
     commit([...fragments, fragment], fragment.id);
     setSelectedId(fragment.id);
     setDraftPolygon([]);
@@ -230,13 +232,31 @@ function App() {
     setNotice(`Фрагмент ${fragments.length + 1} добавлен. Перетащите его за область или контур.`);
   }, [draftPolygon, fragments, commit]);
 
+  const removeDraftPoint = useCallback((index: number) => {
+    if (index < 0 || index >= draftPolygon.length) return;
+    setDraftPolygon(removePointAt(draftPolygon, index));
+    setNotice(`Вершина ${index + 1} удалена. Осталось: ${draftPolygon.length - 1}.`);
+  }, [draftPolygon]);
+  const removeLastDraftPoint = useCallback(() => removeDraftPoint(draftPolygon.length - 1), [removeDraftPoint, draftPolygon.length]);
+  const cancelDraft = useCallback(() => {
+    setDraftPolygon([]);
+    setNotice('Контур отменён.');
+  }, []);
+
   const screenToImage = (event: PointerEvent<HTMLCanvasElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
     return { x: (event.clientX - rect.left - pan.x) / zoom, y: (event.clientY - rect.top - pan.y) / zoom };
   };
   const onCanvasPointerDown = (event: PointerEvent<HTMLCanvasElement>) => {
     if (!documentImage) return;
-    if (event.button === 2) return;
+    if (event.button === 2) {
+      // Правый клик по вершине незавершённого контура удаляет её.
+      event.preventDefault();
+      if (tool === 'lasso' && draftPolygon.length) {
+        removeDraftPoint(nearestPointIndex(draftPolygon, screenToImage(event), 12 / zoom));
+      }
+      return;
+    }
     event.preventDefault();
     const pointer = { x: event.clientX, y: event.clientY };
     if (tool === 'pan' || event.button === 1 || event.shiftKey) {
@@ -336,11 +356,17 @@ function App() {
     if (!selectedFragment) return;
     commit(fragments.map((fragment) => fragment.id === selectedId ? { ...fragment, rotation: fragment.rotation + degrees } : fragment));
   };
+  const deleteFragment = (id: number) => {
+    const index = fragments.findIndex((fragment) => fragment.id === id);
+    if (index < 0) return;
+    const nextSelected = selectedId === id ? null : selectedId;
+    commit(fragments.filter((fragment) => fragment.id !== id), nextSelected);
+    setSelectedId(nextSelected);
+    if (selectedId === id) setPendingSource(null);
+    setNotice(`Участок ${index + 1} удалён. Ctrl+Z вернёт его.`);
+  };
   const deleteSelected = () => {
-    if (!selectedId) return;
-    commit(fragments.filter((fragment) => fragment.id !== selectedId), null);
-    setSelectedId(null);
-    setNotice('Фрагмент удалён. Это действие можно отменить.');
+    if (selectedId != null) deleteFragment(selectedId);
   };
   const toggleFragmentVisibility = (id: number) => {
     const fragment = fragments.find((item) => item.id === id);
@@ -349,10 +375,10 @@ function App() {
     commit(fragments.map((item) => item.id === id ? { ...item, visible } : item), visible ? id : (selectedId === id ? null : selectedId));
     if (visible) {
       setSelectedId(id);
-      setNotice('Участок показан на холсте и останется видимым.');
+      setNotice('Участок показан на холсте и будет сохранён в PNG.');
     } else {
       if (selectedId === id) setSelectedId(null);
-      setNotice('Участок скрыт на холсте; исправление останется в PNG.');
+      setNotice('Участок скрыт: он не отображается на холсте и не попадёт в PNG.');
     }
   };
   const removePair = (index: number) => {
@@ -369,7 +395,11 @@ function App() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (isTextEntry(event.target)) return;
       if ((event.ctrlKey || event.metaKey) && event.code === 'KeyZ') {
-        event.preventDefault(); if (event.shiftKey) redo(); else undo(); return;
+        event.preventDefault();
+        // Пока рисуется контур, Ctrl+Z убирает последнюю вершину, а не откатывает историю.
+        if (!event.shiftKey && tool === 'lasso' && draftPolygon.length) removeLastDraftPoint();
+        else if (event.shiftKey) redo(); else undo();
+        return;
       }
       if ((event.ctrlKey || event.metaKey) && event.code === 'KeyY') { event.preventDefault(); redo(); return; }
       if (event.key === 'Escape' && (draftPolygon.length > 0 || pendingSource)) {
@@ -386,7 +416,9 @@ function App() {
         else if (zoomOut) zoomAtRef.current(canvasCenter(), 1 / 1.15);
       }
       if (event.code === 'Delete' || event.code === 'Backspace') {
-        if (selectedId) { event.preventDefault(); deleteSelected(); }
+        // Во время оцифровки контура клавиша убирает последнюю вершину и не трогает готовые участки.
+        if (tool === 'lasso' && draftPolygon.length) { event.preventDefault(); removeLastDraftPoint(); return; }
+        if (selectedId != null) { event.preventDefault(); deleteSelected(); }
         return;
       }
       if (event.code === 'Space') {
@@ -405,7 +437,7 @@ function App() {
     };
     window.addEventListener('keydown', onKeyDown); window.addEventListener('keyup', onKeyUp);
     return () => { window.removeEventListener('keydown', onKeyDown); window.removeEventListener('keyup', onKeyUp); };
-  }, [undo, redo, tool, finishLasso, selectedId, deleteSelected, zoomAtRef, canvasCenter, draftPolygon, pendingSource]);
+  }, [undo, redo, tool, finishLasso, selectedId, deleteSelected, draftPolygon.length, removeLastDraftPoint, zoomAtRef, canvasCenter, pendingSource]);
 
   const onImportFile = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -416,6 +448,7 @@ function App() {
   };
   const exportPng = () => {
     if (!documentImage) return;
+    const hiddenCount = fragments.length - exportableFragments(fragments).length;
     let output: HTMLCanvasElement;
     try {
       output = window.document.createElement('canvas');
@@ -437,9 +470,10 @@ function App() {
         link.href = url; link.download = `${documentImage.name.replace(/\.[^.]+$/, '')}-исправлено.png`;
         link.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000);
         const sizeMb = blob.size / (1024 * 1024);
+        const hiddenNote = hiddenCount > 0 ? ` Скрытых участков не включено: ${hiddenCount}.` : '';
         setNotice(sizeMb > 50
-          ? `PNG сохранён (${Math.round(sizeMb)} МБ). Файл большой — скачивание и открытие могут занять время.`
-          : 'PNG сохранён в исходном разрешении документа.');
+          ? `PNG сохранён (${Math.round(sizeMb)} МБ). Файл большой — скачивание и открытие могут занять время.${hiddenNote}`
+          : `PNG сохранён в исходном разрешении документа.${hiddenNote}`);
       }, 'image/png');
     } catch (caught) {
       if (caught instanceof DOMException && caught.name === 'SecurityError') setError('Экспорт запрещён политикой безопасности: холст скомпрометирован сторонними данными.');
@@ -480,6 +514,10 @@ function App() {
           onRedo={redo}
           onSelectFragment={setSelectedId}
           onToggleVisibility={toggleFragmentVisibility}
+          onDeleteFragment={deleteFragment}
+          draftCount={draftPolygon.length}
+          onRemoveLastPoint={removeLastDraftPoint}
+          onCancelDraft={cancelDraft}
         />
 
         <CanvasStage

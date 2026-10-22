@@ -57,6 +57,8 @@ export function RightRail({ selectedFragment, tool, canWarp, onTogglePairTool, o
       <div className="panel-block right-content">
         <div className="panel-caption">Клавиши и приёмы</div>
         <div className="status-row"><span>Замкнуть контур</span><strong>ENTER</strong></div>
+        <div className="status-row"><span>Удалить вершину</span><strong>BACKSPACE / ПКМ</strong></div>
+        <div className="status-row"><span>Удалить участок</span><strong>DELETE</strong></div>
         <div className="status-row"><span>Отменить действие</span><strong>CTRL Z</strong></div>
         <div className="status-row"><span>Масштаб</span><strong>+ / −</strong></div>
         <div className="status-row"><span>Панорамирование</span><strong>ПРОБЕЛ</strong></div>

@@ -1,4 +1,4 @@
-import { ArrowLeftRight, Eye, EyeOff, Hand, MousePointer2, Redo2, ScanLine, Undo2 } from 'lucide-react';
+import { ArrowLeftRight, Eye, EyeOff, Hand, MousePointer2, Redo2, ScanLine, Trash2, Undo2, X } from 'lucide-react';
 import type { DocumentImage, Fragment, Tool } from '@/lib/types';
 
 interface LeftRailProps {
@@ -14,9 +14,14 @@ interface LeftRailProps {
   onRedo: () => void;
   onSelectFragment: (id: number) => void;
   onToggleVisibility: (id: number) => void;
+  onDeleteFragment: (id: number) => void;
+  /** Сколько вершин уже поставлено в незавершённом контуре. */
+  draftCount: number;
+  onRemoveLastPoint: () => void;
+  onCancelDraft: () => void;
 }
 
-export function LeftRail({ tool, onToolSelect, documentImage, fragments, selectedId, pointCount, canUndo, canRedo, onUndo, onRedo, onSelectFragment, onToggleVisibility }: LeftRailProps) {
+export function LeftRail({ tool, onToolSelect, documentImage, fragments, selectedId, pointCount, canUndo, canRedo, onUndo, onRedo, onSelectFragment, onToggleVisibility, onDeleteFragment, draftCount, onRemoveLastPoint, onCancelDraft }: LeftRailProps) {
   return (
     <aside className="rail rail-left">
       <div className="rail-head">
@@ -31,7 +36,13 @@ export function LeftRail({ tool, onToolSelect, documentImage, fragments, selecte
           <button className={`tool-button ${tool === 'points' ? 'active' : ''}`} onClick={() => onToolSelect('points')} aria-pressed={tool === 'points'} data-testid="tool-control-points"><span className="tool-icon"><ArrowLeftRight size={14} /></span>Опорные точки<span className="shortcut">P</span></button>
           <button className={`tool-button ${tool === 'pan' ? 'active' : ''}`} onClick={() => onToolSelect('pan')} aria-pressed={tool === 'pan'} data-testid="tool-pan"><span className="tool-icon"><Hand size={14} /></span>Перемещение вида<span className="shortcut">Пробел</span></button>
         </div>
-        {tool === 'lasso' && <p className="hint">Щёлкайте по вершинам. Замкните контур кликом по первой точке или нажмите Enter. Escape отменяет контур.</p>}
+        {tool === 'lasso' && <>
+          <p className="hint">Щёлкайте по вершинам. Замкните контур кликом по первой точке или нажмите Enter. Лишнюю вершину уберите правым кликом по ней, клавишей Backspace (последняя) или кнопкой ниже. Escape отменяет контур.</p>
+          <div style={{ marginTop: 9, display: 'flex', gap: 6 }}>
+            <button className="mini-action" onClick={onRemoveLastPoint} disabled={draftCount === 0} data-testid="button-remove-last-point"><Undo2 size={13} />Убрать точку{draftCount > 0 ? ` (${draftCount})` : ''}</button>
+            <button className="mini-action" onClick={onCancelDraft} disabled={draftCount === 0} data-testid="button-cancel-draft"><X size={13} />Отменить контур</button>
+          </div>
+        </>}
         {tool === 'points' && <p className="hint">Для каждой пары: щёлкните исходное место, затем его правильное положение. Три пары и более задают локальную деформацию.</p>}
       </div>
       <div className="panel-block">
@@ -65,9 +76,18 @@ export function LeftRail({ tool, onToolSelect, documentImage, fragments, selecte
             >
               {fragment.visible ? <Eye size={15} /> : <EyeOff size={15} />}
             </button>
+            <button
+              className="fragment-delete"
+              onClick={() => onDeleteFragment(fragment.id)}
+              title="Удалить участок (Ctrl+Z вернёт)"
+              aria-label={`Удалить участок ${index + 1}`}
+              data-testid={`fragment-delete-${fragment.id}`}
+            >
+              <Trash2 size={14} />
+            </button>
           </div>
         ))}
-        {fragments.length > 0 && <p className="hint">Нажмите на участок, чтобы временно показать его. Значок глаза закрепляет показ; скрытые исправления всё равно попадут в PNG.</p>}
+        {fragments.length > 0 && <p className="hint">Нажмите на участок, чтобы выбрать его. Значок глаза включает и выключает участок: скрытые участки не показываются на холсте и не попадают в PNG. Корзина удаляет участок (Ctrl+Z вернёт).</p>}
       </div>
       <div className="panel-block">
         <div className="eyebrow">Все операции выполняются локально</div>
