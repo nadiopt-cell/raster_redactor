@@ -1,5 +1,5 @@
 import {
-  ArrowDownToLine, ArrowLeftRight, FilePlus2, Hand, MousePointer2, Redo2,
+  ArrowDownToLine, ArrowLeftRight, FilePlus2, FolderOpen, Hand, MousePointer2, Redo2, Save,
   RotateCcw, RotateCw, ScanLine, Undo2, X, ZoomIn, ZoomOut,
 } from 'lucide-react';
 import type { ChangeEvent, RefObject } from 'react';
@@ -54,13 +54,17 @@ export function Toolbar({ tool, onToolSelect, canUndo, canRedo, onUndo, onRedo, 
 
 export interface TopbarProps {
   documentImage: DocumentImage | null;
-  fileRef: RefObject<HTMLInputElement | null>;
+  projectRef: RefObject<HTMLInputElement | null>;
+  canSaveProject: boolean;
+  onSaveProject: () => void;
+  onOpenProject: () => void;
+  onProjectFile: (event: ChangeEvent<HTMLInputElement>) => void;  fileRef: RefObject<HTMLInputElement | null>;
   onImportFile: (event: ChangeEvent<HTMLInputElement>) => void;
   onImportClick: () => void;
   onExportClick: () => void;
 }
 
-export function Topbar({ documentImage, fileRef, onImportFile, onImportClick, onExportClick }: TopbarProps) {
+export function Topbar({ documentImage, fileRef, projectRef, canSaveProject, onSaveProject, onOpenProject, onProjectFile, onImportFile, onImportClick, onExportClick }: TopbarProps) {
   return (
     <header className="topbar">
       <div className="brand">
@@ -73,8 +77,11 @@ export function Topbar({ documentImage, fileRef, onImportFile, onImportClick, on
         <span>{documentImage ? `${documentImage.width.toLocaleString('ru-RU')} × ${documentImage.height.toLocaleString('ru-RU')} px · в браузере` : 'Импортируйте скан для начала работы'}</span>
       </div>
       <input ref={fileRef} type="file" accept="image/*,application/pdf,.pdf" hidden onChange={onImportFile} data-testid="input-import-document" />
+      <input ref={projectRef} type="file" accept=".json,application/json" hidden onChange={onProjectFile} data-testid="input-open-project" />
       <div className="header-actions">
         <button className="btn" onClick={onImportClick} data-testid="button-import-document"><FilePlus2 size={15} /><span>Открыть файл</span></button>
+        <button className="btn" onClick={onSaveProject} disabled={!canSaveProject} title="Контуры и опорные пары в JSON-файле" data-testid="button-save-project"><Save size={15} /><span>Сохранить проект</span></button>
+        <button className="btn" onClick={onOpenProject} title="Продолжить работу из сохранённого проекта" data-testid="button-open-project"><FolderOpen size={15} /><span>Открыть проект</span></button>
         <button className="btn btn-primary" onClick={onExportClick} disabled={!documentImage} data-testid="button-export-png"><ArrowDownToLine size={15} /><span>Экспорт PNG</span></button>
       </div>
     </header>

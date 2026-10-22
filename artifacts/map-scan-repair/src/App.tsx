@@ -18,6 +18,7 @@ import {
 } from '@/lib/geometry';
 import { exportableFragments, nearestPointIndex, removePointAt } from '@/lib/fragments';
 import { pairQuality, residualGrade, type PairQuality } from '@/lib/quality';
+import { clearSession, loadSession, parseProject, saveSession, serializeProject, type ProjectFile } from '@/lib/project';
 import type { DocumentImage, Fragment, Point, Tool } from '@/lib/types';
 
 // Лимиты холста браузера: сторона не более 32767 px, консервативная площадь 100 Мп (Safari/iOS).
@@ -30,6 +31,7 @@ function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const projectRef = useRef<HTMLInputElement>(null);
   const dragRef = useRef<{ kind: 'pan' | 'fragment'; pointer: Point; pan: Point; fragments: Fragment[]; id?: number } | null>(null);
   // Актуальное состояние fragments на время drag: указатель события может отставать
   // от React-рендеров, а commit при pointerup обязан видеть финальную позицию.
@@ -47,6 +49,7 @@ function App() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [draftPolygon, setDraftPolygon] = useState<Point[]>([]);
   const [pendingSource, setPendingSource] = useState<Point | null>(null);
+  const [pendingRestore, setPendingRestore] = useState<ProjectFile | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -79,6 +82,9 @@ function App() {
     setPendingSource(null);
     setError('');
     setNotice('');
+    // Сеанс с прошлого раза: если для этого скана что-то сохранялось, предлагаем продолжить.
+    const session = loadSession(name, width, height);
+    setPendingRestore(session && session.fragments.length > 0 ? session : null);
   }, [needsFitRef, resetHistory, setPan, setZoom]);
 
   const { processFile } = useDocumentLoader(loadImage, notice, setNotice, setLoading, setError);
@@ -92,6 +98,16 @@ function App() {
     window.addEventListener('beforeunload', onBeforeUnload);
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, [fragments.length]);
+
+  // Автосохранение сеанса: фрагменты компактны, изображение не вкладывается —
+  // скан при восстановлении пользователь открывает заново, сверка по имени и размеру.
+  useEffect(() => {
+    if (!documentImage) return;
+    const timer = window.setTimeout(() => {
+      saveSession(documentImage.name, documentImage.width, documentImage.height, fragments, idCounter.current);
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [documentImage, fragments]);
 
   const drawScene = useCallback((ctx: CanvasRenderingContext2D, w: number, h: number, includeGuides: boolean, quality: PairQuality | null) => {
     if (!documentImage) return;
@@ -503,6 +519,48 @@ function App() {
       else setError('Экспорт не удался: браузер не смог сформировать PNG.');
     }
   };
+  const applyProject = useCallback((project: ProjectFile) => {
+    idCounter.current = Math.max(project.nextId, 1);
+    // commit и клонирует, и записывает шаг истории: undo вернёт к состоянию «до проекта».
+    commit(project.fragments, null);
+    setSelectedId(null);
+    setDraftPolygon([]);
+    setPendingSource(null);
+    setNotice(`Проект открыт: восстановлено участков — ${project.fragments.length}.`);
+  }, [commit]);
+
+  const downloadProject = () => {
+    if (!documentImage) return;
+    const json = JSON.stringify(serializeProject(documentImage.name, documentImage.width, documentImage.height, fragments, idCounter.current));
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = window.document.createElement('a');
+    link.href = url; link.download = `${documentImage.name.replace(/\.[^.]+$/, '')}-проект.json`;
+    link.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setNotice('Проект сохранён: контуры и опорные пары в JSON-файле. Изображение в него не входит.');
+  };
+
+  const onProjectFile = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const project = typeof reader.result === 'string' ? parseProject(reader.result) : null;
+      if (!project) { setError('Файл проекта не распознан: это не сохранение «Редактора сканов карт» нужной версии.'); return; }
+      if (!documentImage) {
+        setNotice(`Проект требует исходный скан. Откройте «${project.name}» ${project.width}×${project.height} px, затем откройте проект снова.`);
+        return;
+      }
+      if (documentImage.name !== project.name || documentImage.width !== project.width || documentImage.height !== project.height) {
+        setError(`Проект создан для другого скана: «${project.name}» ${project.width}×${project.height} px, а сейчас открыт «${documentImage.name}».`);
+        return;
+      }
+      applyProject(project);
+    };
+    reader.readAsText(file);
+  };
+
   const handleToolSelect = (next: Tool) => {
     if (next === 'lasso') setDraftPolygon([]);
     if (next === 'points') setPendingSource(null);
@@ -521,7 +579,11 @@ function App() {
         onImportFile={onImportFile}
         onImportClick={() => fileRef.current?.click()}
         onExportClick={exportPng}
-      />
+        projectRef={projectRef}
+        canSaveProject={!!documentImage && fragments.length > 0}
+        onSaveProject={downloadProject}
+        onOpenProject={() => projectRef.current?.click()}
+        onProjectFile={onProjectFile}      />
 
       <section className="workspace">
         <LeftRail
@@ -601,6 +663,21 @@ function App() {
           <AlertDialogFooter>
             <AlertDialogCancel>Оставить текущий</AlertDialogCancel>
             <AlertDialogAction onClick={() => { const file = pendingFile; setPendingFile(null); if (file) void processFile(file); }}>Заменить</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={pendingRestore != null} onOpenChange={(open) => { if (!open) setPendingRestore(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Продолжить прошлый сеанс?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Для файла «{pendingRestore?.name}» в этом браузере остались участки с прошлой работы ({pendingRestore?.fragments.length ?? 0} шт.). Восстановить их вместе с опорными парами?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => { const project = pendingRestore; if (project) clearSession(project.name, project.width, project.height); setPendingRestore(null); }}>Начать заново</AlertDialogCancel>
+            <AlertDialogAction onClick={() => { const project = pendingRestore; setPendingRestore(null); if (project) applyProject(project); }}>Восстановить</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

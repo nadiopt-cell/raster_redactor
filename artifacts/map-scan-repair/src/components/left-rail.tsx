@@ -91,7 +91,7 @@ export function LeftRail({ tool, onToolSelect, documentImage, fragments, selecte
       </div>
       <div className="panel-block">
         <div className="eyebrow">Все операции выполняются локально</div>
-        <p className="hint">Скан не покидает это устройство. История хранится в памяти вкладки — до сотни последних шагов.</p>
+        <p className="hint">Скан не покидает это устройство. История — до сотни шагов в памяти вкладки; контуры и пары автосохраняются в браузере и предлагаются при следующем открытии того же скана.</p>
       </div>
     </aside>
   );
