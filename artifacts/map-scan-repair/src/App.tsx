@@ -17,6 +17,7 @@ import {
   sourceBBox, transformedPoint, triangulate,
 } from '@/lib/geometry';
 import { exportableFragments, nearestPointIndex, removePointAt } from '@/lib/fragments';
+import { pairQuality, residualGrade, type PairQuality } from '@/lib/quality';
 import type { DocumentImage, Fragment, Point, Tool } from '@/lib/types';
 
 // Лимиты холста браузера: сторона не более 32767 px, консервативная площадь 100 Мп (Safari/iOS).
@@ -51,6 +52,12 @@ function App() {
   const [notice, setNotice] = useState('');
 
   const selectedFragment = fragments.find((fragment) => fragment.id === selectedId) ?? null;
+  // Остатки пар инвариантны к drag/rotate целиком, поэтому memo по ссылкам polygon/pairs
+  // пересчитывается только при содержательных изменениях (коммит, правка пар/вершин).
+  const quality = useMemo(
+    () => (selectedFragment ? pairQuality(selectedFragment) : null),
+    [selectedFragment?.id, selectedFragment?.polygon, selectedFragment?.pairs],
+  );
 
   const { canUndo, canRedo, commit, undo, redo, resetHistory } = useHistory(setFragments, selectedId, setSelectedId, setNotice);
   const { zoom, setZoom, pan, setPan, canvasSize, fitImage, zoomAt, canvasCenter, zoomAtRef, needsFitRef } = useViewport(wrapRef, documentImage);
@@ -86,7 +93,7 @@ function App() {
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, [fragments.length]);
 
-  const drawScene = useCallback((ctx: CanvasRenderingContext2D, w: number, h: number, includeGuides: boolean) => {
+  const drawScene = useCallback((ctx: CanvasRenderingContext2D, w: number, h: number, includeGuides: boolean, quality: PairQuality | null) => {
     if (!documentImage) return;
     const { image } = documentImage;
     // На холсте скрытый участок временно виден, пока выбран. В экспорт попадают только видимые (закреплённые глазком).
@@ -174,6 +181,16 @@ function App() {
           ctx.fillStyle = pointIndex ? '#b56549' : '#31594d'; ctx.fill(); ctx.strokeStyle = '#fff8e9'; ctx.lineWidth = 1.5 / zoom; ctx.stroke();
         });
         ctx.fillStyle = '#fcf8ed'; ctx.font = `${10 / zoom}px "DM Mono", monospace`; ctx.fillText(String(index + 1), source.x + 7 / zoom, source.y - 7 / zoom);
+        if (fragment.id === selectedId && quality && quality.residuals[index] != null) {
+          // Кольцо качества: чем хуже пара держится соседними, тем «горячее» цвет остатка.
+          const residual = quality.residuals[index] as number;
+          const grade = residualGrade(residual, Math.hypot(w, h));
+          ctx.beginPath(); ctx.arc(target.x, target.y, 9.5 / zoom, 0, Math.PI * 2);
+          ctx.setLineDash([3.5 / zoom, 2.5 / zoom]);
+          ctx.strokeStyle = grade === 'ok' ? '#3f6f4f' : grade === 'watch' ? '#b3872f' : '#b04a3a';
+          ctx.lineWidth = 1.5 / zoom;
+          ctx.stroke(); ctx.setLineDash([]);
+        }
       });
     });
     if (draftPolygon.length) {
@@ -193,7 +210,7 @@ function App() {
       ctx.beginPath(); ctx.arc(marker.x, marker.y, 6 / zoom, 0, Math.PI * 2);
       ctx.fillStyle = '#31594d'; ctx.fill(); ctx.strokeStyle = '#fff8e9'; ctx.lineWidth = 2 / zoom; ctx.stroke();
     }
-  }, [documentImage, fragments, selectedId, zoom, draftPolygon, pendingSource]);
+  }, [documentImage, fragments, selectedId, zoom, draftPolygon, pendingSource, quality]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -217,7 +234,7 @@ function App() {
     ctx.save();
     ctx.translate(pan.x, pan.y);
     ctx.scale(zoom, zoom);
-    drawScene(ctx, documentImage.width, documentImage.height, true);
+    drawScene(ctx, documentImage.width, documentImage.height, true, quality);
     ctx.restore();
   }, [documentImage, fragments, canvasSize, pan, zoom, drawScene]);
 
@@ -462,7 +479,7 @@ function App() {
       const context = output.getContext('2d');
       if (!context) throw new Error('Не удалось создать экспортное изображение.');
       context.imageSmoothingQuality = 'high';
-      drawScene(context, output.width, output.height, false);
+      drawScene(context, output.width, output.height, false, null);
     } catch (caught) {
       if (caught instanceof DOMException && caught.name === 'SecurityError') setError('Экспорт запрещён политикой безопасности: холст скомпрометирован сторонними данными.');
       else setError(caught instanceof Error ? caught.message : 'Экспорт не удался: браузер не смог подготовить изображение.');
@@ -568,6 +585,8 @@ function App() {
           onDelete={deleteSelected}
           onRemovePair={removePair}
           onClearPairs={() => commit(fragments.map((fragment) => fragment.id === selectedId ? { ...fragment, pairs: [] } : fragment))}
+          quality={quality}
+          qualityDiagonal={documentImage ? Math.hypot(documentImage.width, documentImage.height) : 0}
         />
       </section>
 

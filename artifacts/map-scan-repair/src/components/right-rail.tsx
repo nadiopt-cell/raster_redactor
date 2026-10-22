@@ -1,4 +1,6 @@
 import { ArrowLeftRight, CircleHelp, RotateCcw, RotateCw, X } from 'lucide-react';
+import { residualGrade } from '@/lib/quality';
+import type { PairQuality } from '@/lib/quality';
 import type { Fragment, Tool } from '@/lib/types';
 
 interface RightRailProps {
@@ -7,12 +9,32 @@ interface RightRailProps {
   onTogglePairTool: () => void;
   onRotate: (degrees: number) => void;
   onDelete: () => void;
-  onRemovePair: (index: number) => void;
+  quality: PairQuality | null;
+  /** Диагональ документа в px — шкала цветовых порогов остатков. */
+  qualityDiagonal: number;  onRemovePair: (index: number) => void;
   onClearPairs: () => void;
 }
 
-export function RightRail({ selectedFragment, tool, onTogglePairTool, onRotate, onDelete, onRemovePair, onClearPairs }: RightRailProps) {
+export function RightRail({ selectedFragment, tool, quality, qualityDiagonal, onTogglePairTool, onRotate, onDelete, onRemovePair, onClearPairs }: RightRailProps) {
   const pairs = selectedFragment?.pairs ?? [];
+
+  // Чип рядом с парой: остаток leave-one-out с цветовым порогом от диагонали документа.
+  const residualChip = (index: number) => {
+    const residual = quality?.residuals[index] ?? null;
+    if (residual == null) {
+      return { className: 'residual-none', text: '—', title: 'Остаток недоступен: мало пар или пара снаружи остальных.' };
+    }
+    const grade = residualGrade(residual, qualityDiagonal);
+    return {
+      className: `residual-${grade}`,
+      text: `${residual.toFixed(1)} px`,
+      title: residual <= qualityDiagonal / 1000
+        ? 'Пара согласована с соседними.'
+        : residual <= qualityDiagonal / 250
+          ? 'Пара заметно расходится с соседними — стоит перепроверить.'
+          : 'Пара сильно выбивается из сетки — вероятно, цель поставлена не туда.',
+    };
+  };
 
   return (
     <aside className="rail rail-right">
@@ -46,7 +68,7 @@ export function RightRail({ selectedFragment, tool, onTogglePairTool, onRotate, 
           </div>
           {selectedFragment.pairs.length > 0 && selectedFragment.pairs.map((pair, index) => (
             <div className="control-pair" key={`${selectedFragment.id}-${index}`}>
-              <div className="pair-head"><span className="pair-index">{index + 1}</span><span className="eyebrow">Сопоставление</span><button className="btn-icon" onClick={() => onRemovePair(index)} title="Удалить пару" aria-label={`Удалить пару ${index + 1}`}><X size={13} /></button></div>
+              <div className="pair-head"><span className="pair-index">{index + 1}</span><span className="eyebrow">Сопоставление</span><span className={`residual-chip ${residualChip(index).className}`} title={residualChip(index).title}>{residualChip(index).text}</span><button className="btn-icon" onClick={() => onRemovePair(index)} title="Удалить пару" aria-label={`Удалить пару ${index + 1}`}><X size={13} /></button></div>
               <div className="point-cell">ИСТОЧНИК<strong>{Math.round(pair.source.x)}, {Math.round(pair.source.y)}</strong></div>
               <div className="point-cell">ЦЕЛЬ<strong>{Math.round(pair.target.x)}, {Math.round(pair.target.y)}</strong></div>
             </div>
@@ -56,7 +78,9 @@ export function RightRail({ selectedFragment, tool, onTogglePairTool, onRotate, 
             <span>Модель</span>
             <strong>{pairs.length >= 3 ? 'локальная сетка' : 'сдвиг и поворот'}</strong>
           </div>
-        </>}
+          {quality && (
+            <div className="status-row"><span>Согласованность пар (RMS)</span><strong>{quality.rms != null ? `${quality.rms.toFixed(1)} px` : '—'}</strong></div>
+          )}        </>}
       </div>
       <div className="panel-block right-content">
         <div className="panel-caption">Клавиши и приёмы</div>
