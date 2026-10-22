@@ -38,7 +38,7 @@ export function LeftRail({ tool, onToolSelect, documentImage, fragments, selecte
         </div>
         {tool === 'lasso' && <>
           <p className="hint">Щёлкайте по вершинам. Замкните контур кликом по первой точке или нажмите Enter. Лишнюю вершину уберите правым кликом по ней, клавишей Backspace (последняя) или кнопкой ниже. Escape отменяет контур.</p>
-          <div style={{ marginTop: 9, display: 'flex', gap: 6 }}>
+          <div className="draft-actions">
             <button className="mini-action" onClick={onRemoveLastPoint} disabled={draftCount === 0} data-testid="button-remove-last-point"><Undo2 size={13} />Убрать точку{draftCount > 0 ? ` (${draftCount})` : ''}</button>
             <button className="mini-action" onClick={onCancelDraft} disabled={draftCount === 0} data-testid="button-cancel-draft"><X size={13} />Отменить контур</button>
           </div>

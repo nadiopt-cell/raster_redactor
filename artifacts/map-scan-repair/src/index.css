@@ -145,6 +145,7 @@
 .fragment-delete:hover { background: #f3dfd7; color: #a8553e; border-color: #e3bfb2; }
 .fragment-delete:focus-visible { outline: 2px solid #a8553e; outline-offset: 1px; }
 .mini-action:disabled { opacity: .45; cursor: not-allowed; }
+.draft-actions { margin-top: 9px; display: flex; gap: 6px; }
 .fragment-visibility.visible { color: #31594d; background: #e2e8dc; border-color: #c0cdbd; }
 .fragment-num { width: 22px; height: 22px; flex: 0 0 22px; display: grid; place-items: center; background: #31594d; color: #faf5e9; border-radius: 50%; font: 10px var(--app-font-mono); }
 .fragment-details { min-width: 0; display: flex; flex-direction: column; gap: 3px; font-size: 10px; font-weight: 700; }
