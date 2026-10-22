@@ -417,6 +417,7 @@ function App() {
       }
       if (event.code === 'Delete' || event.code === 'Backspace') {
         // Во время оцифровки контура клавиша убирает последнюю вершину и не трогает готовые участки.
+        if (event.repeat) return;
         if (tool === 'lasso' && draftPolygon.length) { event.preventDefault(); removeLastDraftPoint(); return; }
         if (selectedId != null) { event.preventDefault(); deleteSelected(); }
         return;
