@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { cloneFragments } from '@/lib/geometry';
 import type { Fragment, HistoryEntry } from '@/lib/types';
 
@@ -22,14 +22,29 @@ export const pushHistoryEntry = (
 export const restoreSelection = (snapshot: HistoryEntry): number | null =>
   snapshot.fragments.some((fragment) => fragment.id === snapshot.selectedId) ? snapshot.selectedId : null;
 
+// История и индекс живут в одном состоянии: они обязаны меняться вместе,
+// иначе между двумя set-вызовами возможен рассогласованный взгляд на историю.
+type HistoryState = { history: HistoryEntry[]; index: number };
+
+const initialValues = (): HistoryState => ({ history: [{ fragments: [], selectedId: null }], index: 0 });
+
 export function useHistory(
   setFragments: (next: Fragment[]) => void,
   selectedId: number | null,
   setSelectedId: (id: number | null) => void,
   setNotice: (message: string) => void,
 ) {
-  const [history, setHistory] = useState<HistoryEntry[]>([{ fragments: [], selectedId: null }]);
-  const [historyIndex, setHistoryIndex] = useState(0);
+  const [state, setState] = useState<HistoryState>(initialValues);
+  // Синхронное зеркало состояния: все мутации проходят через apply(),
+  // поэтому два вызова commit в одном батче видят результат первого
+  // и не используют устаревший индекс (раньше это теряло undo-записи).
+  const stateRef = useRef(state);
+  const apply = useCallback((next: HistoryState) => {
+    stateRef.current = next;
+    setState(next);
+  }, []);
+
+  const { history, index: historyIndex } = state;
   const canUndo = historyIndex > 0;
   const canRedo = historyIndex < history.length - 1;
 
@@ -37,34 +52,30 @@ export function useHistory(
     const clean = cloneFragments(next);
     const selection = nextSelectedId === undefined ? selectedId : nextSelectedId;
     setFragments(clean);
-    setHistory((old) => pushHistoryEntry(old, historyIndex, { fragments: cloneFragments(clean), selectedId: selection ?? null }).history);
-    setHistoryIndex(pushHistoryEntry(history, historyIndex, { fragments: clean, selectedId: selection ?? null }).index);
-  }, [history, historyIndex, selectedId, setFragments]);
+    apply(pushHistoryEntry(stateRef.current.history, stateRef.current.index, { fragments: cloneFragments(clean), selectedId: selection ?? null }));
+  }, [apply, selectedId, setFragments]);
 
   const undo = useCallback(() => {
-    if (!canUndo) return;
-    const index = historyIndex - 1;
-    const snapshot = history[index];
-    setHistoryIndex(index);
+    const old = stateRef.current;
+    if (old.index <= 0) return;
+    const snapshot = old.history[old.index - 1];
     setFragments(cloneFragments(snapshot.fragments));
     setSelectedId(restoreSelection(snapshot));
     setNotice('Изменение отменено.');
-  }, [canUndo, history, historyIndex, setFragments, setSelectedId, setNotice]);
+    apply({ history: old.history, index: old.index - 1 });
+  }, [apply, setFragments, setSelectedId, setNotice]);
 
   const redo = useCallback(() => {
-    if (!canRedo) return;
-    const index = historyIndex + 1;
-    const snapshot = history[index];
-    setHistoryIndex(index);
+    const old = stateRef.current;
+    if (old.index >= old.history.length - 1) return;
+    const snapshot = old.history[old.index + 1];
     setFragments(cloneFragments(snapshot.fragments));
     setSelectedId(restoreSelection(snapshot));
     setNotice('Изменение восстановлено.');
-  }, [canRedo, history, historyIndex, setFragments, setSelectedId, setNotice]);
+    apply({ history: old.history, index: old.index + 1 });
+  }, [apply, setFragments, setSelectedId, setNotice]);
 
-  const resetHistory = useCallback(() => {
-    setHistory([{ fragments: [], selectedId: null }]);
-    setHistoryIndex(0);
-  }, []);
+  const resetHistory = useCallback(() => apply(initialValues()), [apply]);
 
-  return { history, historyIndex, canUndo, canRedo, commit, undo, redo, resetHistory };
+  return { canUndo, canRedo, commit, undo, redo, resetHistory };
 }

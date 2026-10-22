@@ -44,6 +44,17 @@ describe('pushHistoryEntry', () => {
     expect(history[index].fragments[0].id).toBe(HISTORY_LIMIT + 4);
     expect(history[0].fragments[0].id).toBe(5);
   });
+
+  it('РЕГРЕССИЯ: два коммита в одном батче сохраняют обе записи', () => {
+    // Раньше commit вычислял setHistoryIndex с устаревшим historyIndex из замыкания:
+    // второй pushHistoryEntry обязан обрезал redo-ветку вместе с только что добавленной записью.
+    // Теперь index всегда берётся из результата предыдущего pushHistoryEntry (актуальный stateRef).
+    const initial: HistoryEntry = { fragments: [], selectedId: null };
+    const first = pushHistoryEntry([initial], 0, entry(1));
+    const second = pushHistoryEntry(first.history, first.index, entry(2));
+    expect(second.history.map((item) => item.selectedId)).toEqual([null, 1, 2]);
+    expect(second.index).toBe(2);
+  });
 });
 
 describe('restoreSelection', () => {
