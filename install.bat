@@ -61,7 +61,7 @@ rem --- 3. Зависимости монорепозитория ---
 echo.
 echo Устанавливаю зависимости монорепозитория. Это может занять несколько минут...
 echo.
-call pnpm install
+call pnpm install --no-frozen-lockfile
 if errorlevel 1 (
   echo [ОШИБКА] pnpm install завершился с ошибкой, подробности выше.
   pause
