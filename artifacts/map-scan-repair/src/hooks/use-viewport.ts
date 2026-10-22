@@ -24,14 +24,17 @@ export function useViewport(
     setPan({ x: (width - documentImage.width * nextZoom) / 2, y: (height - documentImage.height * nextZoom) / 2 });
   }, [documentImage, wrapRef]);
 
-  const zoomAt = (point: Point, factor: number) => {
+  // Возвращает true, если зум действительно изменился: колесо мыши перехватывает
+  // скролл только в этом случае — на границе диапазона прокрутка остаётся живой.
+  const zoomAt = (point: Point, factor: number): boolean => {
     // Без документа зум «в пустоту» только меняет счётчик процентов — не даём.
-    if (!documentImage) return;
+    if (!documentImage) return false;
     const minZoom = Math.min(0.08, fitZoomRef.current);
     const next = Math.max(minZoom, Math.min(4, zoom * factor));
-    if (next === zoom) return;
+    if (next === zoom) return false;
     setZoom(next);
     setPan({ x: point.x - ((point.x - pan.x) / zoom) * next, y: point.y - ((point.y - pan.y) / zoom) * next });
+    return true;
   };
   const zoomAtRef = useRef(zoomAt);
   zoomAtRef.current = zoomAt;
@@ -46,10 +49,10 @@ export function useViewport(
     if (!element) return;
     const onWheel = (event: WheelEvent) => {
       if (!documentImage) return;
-      event.preventDefault();
       const rect = element.getBoundingClientRect();
       const factor = Math.exp(-event.deltaY * 0.0015);
-      zoomAtRef.current({ x: event.clientX - rect.left, y: event.clientY - rect.top }, factor);
+      if (!zoomAtRef.current({ x: event.clientX - rect.left, y: event.clientY - rect.top }, factor)) return;
+      event.preventDefault();
     };
     element.addEventListener('wheel', onWheel, { passive: false });
     return () => element.removeEventListener('wheel', onWheel);
