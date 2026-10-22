@@ -61,11 +61,16 @@ rem --- 3. Зависимости монорепозитория ---
 echo.
 echo Устанавливаю зависимости монорепозитория. Это может занять несколько минут...
 echo.
-call pnpm install --no-frozen-lockfile
+rem Сначала строго по lockfile — это повторяющиеся версии из репозитория.
+call pnpm install --frozen-lockfile
 if errorlevel 1 (
-  echo [ОШИБКА] pnpm install завершился с ошибкой, подробности выше.
-  pause
-  exit /b 1
+  echo [ПРЕДУПРЕЖДЕНИЕ] Установка строго по lockfile не удалась, на машине pnpm другой версии? Пробую без него...
+  call pnpm install --no-frozen-lockfile
+  if errorlevel 1 (
+    echo [ОШИБКА] pnpm install завершился с ошибкой, подробности выше.
+    pause
+    exit /b 1
+  )
 )
 
 rem --- 4. Production-сборка редактора ---
