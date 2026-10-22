@@ -1,5 +1,5 @@
 import {
-  ArrowDownToLine, ArrowLeftRight, FilePlus2, FolderOpen, Hand, MousePointer2, Redo2, Save,
+  ArrowDownToLine, ArrowLeftRight, Columns2, FilePlus2, FolderOpen, Hand, MousePointer2, Redo2, Save,
   RotateCcw, RotateCw, ScanLine, Undo2, X, ZoomIn, ZoomOut,
 } from 'lucide-react';
 import type { ChangeEvent, RefObject } from 'react';
@@ -19,9 +19,15 @@ interface ToolbarProps {
   selectedNumber: number | null;
   onRotate: (degrees: number) => void;
   onDelete: () => void;
+  comparing: boolean;
+  /** 0 — только результат, 1 — только нетронутый оригинал. */
+  compare: number;
+  canCompare: boolean;
+  onCompareToggle: () => void;
+  onCompareChange: (value: number) => void;
 }
 
-export function Toolbar({ tool, onToolSelect, canUndo, canRedo, onUndo, onRedo, onZoomIn, onZoomOut, onFit, percentZoom, selectedNumber, onRotate, onDelete }: ToolbarProps) {
+export function Toolbar({ tool, onToolSelect, canUndo, canRedo, onUndo, onRedo, onZoomIn, onZoomOut, onFit, percentZoom, selectedNumber, onRotate, onDelete, comparing, compare, canCompare, onCompareToggle, onCompareChange }: ToolbarProps) {
   return (
     <div className="toolbar">
       <div className="toolbar-group">
@@ -38,6 +44,9 @@ export function Toolbar({ tool, onToolSelect, canUndo, canRedo, onUndo, onRedo, 
         <button className="btn-icon" onClick={onFit} title="Вписать лист" aria-label="Вписать лист" data-testid="zoom-fit"><ScanLine size={16} /></button>
       </div>
       <div className="toolbar-group">
+        <button className={`btn-icon ${comparing ? 'active' : ''}`} onClick={onCompareToggle} disabled={!canCompare} title="Сравнить до/после" aria-pressed={comparing} data-testid="toolbar-compare"><Columns2 size={16} /></button>
+        {comparing && <input type="range" className="compare-slider" min={0} max={100} value={Math.round(compare * 100)} onChange={(event) => onCompareChange(Number(event.target.value) / 100)} aria-label="Доля нетронутого оригинала поверх результата" data-testid="compare-slider" />}
+        {comparing && <span className="tool-separator" />}
         {selectedNumber != null && <>
           <button className="btn-icon" onClick={() => onRotate(-1)} title="Повернуть на −1°" aria-label="Повернуть на −1°" data-testid="toolbar-rotate-left"><RotateCcw size={15} /></button>
           <button className="btn-icon" onClick={() => onRotate(1)} title="Повернуть на +1°" aria-label="Повернуть на +1°" data-testid="toolbar-rotate-right"><RotateCw size={15} /></button>

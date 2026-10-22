@@ -50,6 +50,8 @@ function App() {
   const [draftPolygon, setDraftPolygon] = useState<Point[]>([]);
   const [pendingSource, setPendingSource] = useState<Point | null>(null);
   const [pendingRestore, setPendingRestore] = useState<ProjectFile | null>(null);
+  const [comparing, setComparing] = useState(false);
+  const [compare, setCompare] = useState(0.5);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -83,6 +85,7 @@ function App() {
     setError('');
     setNotice('');
     // Сеанс с прошлого раза: если для этого скана что-то сохранялось, предлагаем продолжить.
+    setComparing(false);
     const session = loadSession(name, width, height);
     setPendingRestore(session && session.fragments.length > 0 ? session : null);
   }, [needsFitRef, resetHistory, setPan, setZoom]);
@@ -109,7 +112,7 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [documentImage, fragments]);
 
-  const drawScene = useCallback((ctx: CanvasRenderingContext2D, w: number, h: number, includeGuides: boolean, quality: PairQuality | null) => {
+  const drawScene = useCallback((ctx: CanvasRenderingContext2D, w: number, h: number, includeGuides: boolean, quality: PairQuality | null = null, compareAlpha = 0) => {
     if (!documentImage) return;
     const { image } = documentImage;
     // На холсте скрытый участок временно виден, пока выбран. В экспорт попадают только видимые (закреплённые глазком).
@@ -174,6 +177,11 @@ function App() {
         });
       }
     });
+    if (compareAlpha > 0) {
+      // Режим сравнения: поверх результата — нетронутый оригинал заданной долей прозрачности.
+      ctx.save(); ctx.globalAlpha = compareAlpha; ctx.drawImage(image, 0, 0); ctx.restore();
+      return;
+    }
     if (!includeGuides) return;
     holes.forEach((fragment) => {
       ctx.save();
@@ -250,9 +258,9 @@ function App() {
     ctx.save();
     ctx.translate(pan.x, pan.y);
     ctx.scale(zoom, zoom);
-    drawScene(ctx, documentImage.width, documentImage.height, true, quality);
+    drawScene(ctx, documentImage.width, documentImage.height, !comparing, quality, comparing ? compare : 0);
     ctx.restore();
-  }, [documentImage, fragments, canvasSize, pan, zoom, drawScene]);
+  }, [documentImage, fragments, canvasSize, pan, zoom, drawScene, comparing, compare]);
 
   const finishLasso = useCallback(() => {
     if (draftPolygon.length < 3) {
@@ -621,6 +629,11 @@ function App() {
               selectedNumber={selectedNumber}
               onRotate={rotateSelected}
               onDelete={deleteSelected}
+              comparing={comparing}
+              compare={compare}
+              canCompare={!!documentImage && fragments.length > 0}
+              onCompareToggle={() => setComparing((value) => !value)}
+              onCompareChange={setCompare}
             />
           }
           wrapRef={wrapRef}
