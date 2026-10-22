@@ -29,9 +29,9 @@ jobs:
         run: pnpm run typecheck
 
       - name: Юнит-тесты
-        run: pnpm --filter ./artifacts/** --if-present run test
+        run: pnpm --filter "./artifacts/**" --if-present run test
 
       - name: Сборка
-        run: pnpm --filter ./artifacts/** --if-present run build
+        run: pnpm --filter "./artifacts/**" --if-present run build
         env:
           BASE_PATH: /
