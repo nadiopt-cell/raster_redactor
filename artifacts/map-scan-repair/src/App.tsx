@@ -51,7 +51,6 @@ function App() {
   const [notice, setNotice] = useState('');
 
   const selectedFragment = fragments.find((fragment) => fragment.id === selectedId) ?? null;
-  const canWarp = !!selectedFragment && selectedFragment.pairs.length >= 3;
 
   const { canUndo, canRedo, commit, undo, redo, resetHistory } = useHistory(setFragments, selectedId, setSelectedId, setNotice);
   const { zoom, setZoom, pan, setPan, canvasSize, fitImage, zoomAt, canvasCenter, zoomAtRef, needsFitRef } = useViewport(wrapRef, documentImage);
@@ -109,12 +108,28 @@ function App() {
       ctx.restore();
     });
     holes.forEach((fragment) => {
-      if (fragment.pairs.length >= 3) {
-        // Пары проходят через тот же rigid-оператор, что и вершины полигона:
-        // drag/rotate переносят сшитый результат целиком, не разрывая деформацию.
-        const mesh = buildMesh(fragment);
+      const mesh = buildMesh(fragment);
+      if (fragment.pairs.length < 3) {
+        // Жёсткая модель пользователя: содержимое сдвигается и поворачивается целиком,
+        // опорные пары включаются с трёх штук (та же проверенная семантика, что и раньше).
+        ctx.save();
+        const center = cachedCentroid(fragment.polygon);
+        ctx.translate(center.x + fragment.dx, center.y + fragment.dy);
+        ctx.rotate(fragment.rotation * Math.PI / 180);
+        ctx.translate(-center.x, -center.y);
+        ctx.beginPath();
+        ctx.moveTo(fragment.polygon[0].x, fragment.polygon[0].y);
+        fragment.polygon.slice(1).forEach((point) => ctx.lineTo(point.x, point.y));
+        ctx.closePath(); ctx.clip('evenodd');
+        const box = sourceBBox(fragment.polygon, 2, w, h);
+        if (box.sw > 0 && box.sh > 0) ctx.drawImage(image, box.sx, box.sy, box.sw, box.sh, box.sx, box.sy, box.sw, box.sh);
+        ctx.restore();
+      } else {
+        // Локальная сетка (3+ пар). Пары проходят через тот же rigid-оператор, что и
+        // вершины полигона: drag/rotate переносят сшитый результат целиком, не разрывая
+        // деформацию между границей и якорями пар.
         const triangles = triangulate(mesh.map((point) => point.source));
-        const boundary = expandPolygon(fragment.polygon.map((point) => transformedPoint(point, fragment)), 0.5);
+        const boundary = expandPolygon(mesh.slice(0, fragment.polygon.length).map((point) => point.target), 0.5);
         triangles.forEach((triangle) => {
           const src = triangle.map((index) => mesh[index].source);
           const dst = triangle.map((index) => mesh[index].target);
@@ -135,25 +150,12 @@ function App() {
           ctx.restore();
         });
       }
-      if (fragment.pairs.length < 3) {
-        ctx.save();
-        const center = cachedCentroid(fragment.polygon);
-        ctx.translate(center.x + fragment.dx, center.y + fragment.dy);
-        ctx.rotate(fragment.rotation * Math.PI / 180);
-        ctx.translate(-center.x, -center.y);
-        ctx.beginPath();
-        ctx.moveTo(fragment.polygon[0].x, fragment.polygon[0].y);
-        fragment.polygon.slice(1).forEach((point) => ctx.lineTo(point.x, point.y));
-        ctx.closePath(); ctx.clip('evenodd');
-        const box = sourceBBox(fragment.polygon, 2, w, h);
-        if (box.sw > 0 && box.sh > 0) ctx.drawImage(image, box.sx, box.sy, box.sw, box.sh, box.sx, box.sy, box.sw, box.sh);
-        ctx.restore();
-      }
     });
     if (!includeGuides) return;
     holes.forEach((fragment) => {
       ctx.save();
-      const polygon = fragment.polygon.map((point) => transformedPoint(point, fragment));
+      // Граница рисуется по целям mesh: одна и та же модель правит и содержимое, и контур.
+      const polygon = buildMesh(fragment).slice(0, fragment.polygon.length).map((point) => point.target);
       ctx.beginPath(); ctx.moveTo(polygon[0].x, polygon[0].y); polygon.slice(1).forEach((point) => ctx.lineTo(point.x, point.y)); ctx.closePath();
       ctx.strokeStyle = fragment.id === selectedId ? '#b56549' : '#31594d';
       ctx.lineWidth = 2 / zoom; ctx.setLineDash([7 / zoom, 5 / zoom]); ctx.stroke(); ctx.setLineDash([]);
@@ -288,7 +290,10 @@ function App() {
         const next = fragments.map((fragment) => fragment.id === selectedFragment.id
           ? { ...fragment, pairs: [...fragment.pairs, { source: pendingSource, target: imagePoint }] } : fragment);
         commit(next); setPendingSource(null);
-        setNotice(`Опорных пар: ${(selectedFragment.pairs.length + 1)}. Для локальной деформации нужно минимум три.`);
+        const count = selectedFragment.pairs.length + 1;
+        setNotice(count >= 3
+          ? `Опорных пар: ${count}. Локальная сетка деформации активна.`
+          : `Опорных пар: ${count}. Локальная сетка заработает с трёх пар.`);
       }
       return;
     }
@@ -558,7 +563,6 @@ function App() {
         <RightRail
           selectedFragment={selectedFragment}
           tool={tool}
-          canWarp={canWarp}
           onTogglePairTool={() => { setTool(tool === 'points' ? 'select' : 'points'); setPendingSource(null); }}
           onRotate={rotateSelected}
           onDelete={deleteSelected}

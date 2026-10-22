@@ -43,7 +43,7 @@ export function LeftRail({ tool, onToolSelect, documentImage, fragments, selecte
             <button className="mini-action" onClick={onCancelDraft} disabled={draftCount === 0} data-testid="button-cancel-draft"><X size={13} />Отменить контур</button>
           </div>
         </>}
-        {tool === 'points' && <p className="hint">Для каждой пары: щёлкните исходное место, затем его правильное положение. Три пары и более задают локальную деформацию.</p>}
+        {tool === 'points' && <p className="hint">Для каждой пары: щёлкните исходное место, затем его правильное положение. Три пары и более включают локальную сетку деформации.</p>}
       </div>
       <div className="panel-block">
         <div className="panel-caption">Слои документа</div>

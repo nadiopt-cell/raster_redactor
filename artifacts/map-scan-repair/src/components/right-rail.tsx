@@ -4,7 +4,6 @@ import type { Fragment, Tool } from '@/lib/types';
 interface RightRailProps {
   selectedFragment: Fragment | null;
   tool: Tool;
-  canWarp: boolean;
   onTogglePairTool: () => void;
   onRotate: (degrees: number) => void;
   onDelete: () => void;
@@ -12,7 +11,9 @@ interface RightRailProps {
   onClearPairs: () => void;
 }
 
-export function RightRail({ selectedFragment, tool, canWarp, onTogglePairTool, onRotate, onDelete, onRemovePair, onClearPairs }: RightRailProps) {
+export function RightRail({ selectedFragment, tool, onTogglePairTool, onRotate, onDelete, onRemovePair, onClearPairs }: RightRailProps) {
+  const pairs = selectedFragment?.pairs ?? [];
+
   return (
     <aside className="rail rail-right">
       <div className="rail-head">
@@ -39,7 +40,7 @@ export function RightRail({ selectedFragment, tool, canWarp, onTogglePairTool, o
       <div className="panel-block right-content">
         <div className="panel-caption">Сшивка по опорным точкам</div>
         {!selectedFragment ? <p className="hint">Выделите фрагмент перед созданием пар точек.</p> : <>
-          <p className="hint">Пара задаёт соответствие исходной точки её целевому положению. Деформация строится по треугольной сетке.</p>
+          <p className="hint">Пара задаёт соответствие исходной точки её целевому положению. С трёх пар содержимое деформируется локальной сеткой по треугольникам, каждая пара выполняется точно.</p>
           <div className="control-row">
             <button className={`btn ${tool === 'points' ? 'btn-primary' : ''}`} onClick={onTogglePairTool} data-testid="button-add-control-pair"><ArrowLeftRight size={14} />{tool === 'points' ? 'Завершить пары' : 'Поставить пару'}</button>
           </div>
@@ -51,7 +52,10 @@ export function RightRail({ selectedFragment, tool, canWarp, onTogglePairTool, o
             </div>
           ))}
           {selectedFragment.pairs.length > 0 && <button className="mini-action" style={{ width: '100%', marginTop: 8 }} onClick={onClearPairs} data-testid="button-clear-pairs"><X size={13} />Очистить пары</button>}
-          <div className="status-row" style={{ marginTop: 11 }}><span>Сетка деформации</span><strong>{canWarp ? 'АКТИВНА' : `${selectedFragment.pairs.length}/3`}</strong></div>
+          <div className="status-row" style={{ marginTop: 11 }}>
+            <span>Модель</span>
+            <strong>{pairs.length >= 3 ? 'локальная сетка' : 'сдвиг и поворот'}</strong>
+          </div>
         </>}
       </div>
       <div className="panel-block right-content">
