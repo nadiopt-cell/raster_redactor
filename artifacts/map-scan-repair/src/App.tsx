@@ -12,7 +12,7 @@ import { useHistory } from '@/hooks/use-history';
 import { useDocumentLoader } from '@/hooks/use-document-loader';
 import { useViewport } from '@/hooks/use-viewport';
 import {
-  applyAffineTriangle, buildMesh, cachedCentroid, cloneFragments, distance,
+  applyAffineTriangle, buildMesh, cachedCentroid, cloneFragments, distance, triangleCentroid,
   expandPolygon, inverseFragmentPoint, pointInside, pointOnOrNearPolygon,
   sourceBBox, transformedPoint, triangulate,
 } from '@/lib/geometry';
@@ -118,7 +118,7 @@ function App() {
         triangles.forEach((triangle) => {
           const src = triangle.map((index) => mesh[index].source);
           const dst = triangle.map((index) => mesh[index].target);
-          const center = { x: (src[0].x + src[1].x + src[2].x) / 3, y: (src[0].y + src[1].y + src[2].y) / 3 };
+          const center = triangleCentroid(src);
           if (!pointInside(center, fragment.polygon)) return;
           ctx.save();
           ctx.beginPath();

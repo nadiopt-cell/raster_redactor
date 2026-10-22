@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   applyAffineTriangle, buildMesh, cachedCentroid, centroid, cloneFragments, distance,
   expandPolygon, inverseFragmentPoint, pointInside, pointOnOrNearPolygon,
-  sourceBBox, transformedPoint, triangulate,
+  sourceBBox, transformedPoint, triangleCentroid, triangulate,
 } from './geometry';
 import type { Fragment, Point } from './types';
 
@@ -239,5 +239,11 @@ describe('distance', () => {
   it('евклидово расстояние', () => {
     expect(distance({ x: 0, y: 0 }, { x: 3, y: 4 })).toBe(5);
     expect(distance({ x: 2, y: 2 }, { x: 2, y: 2 })).toBe(0);
+  });
+});
+
+describe('triangleCentroid', () => {
+  it('считает среднее трёх вершин', () => {
+    expect(triangleCentroid([{ x: 0, y: 0 }, { x: 6, y: 3 }, { x: 3, y: 9 }])).toEqual({ x: 3, y: 4 });
   });
 });
